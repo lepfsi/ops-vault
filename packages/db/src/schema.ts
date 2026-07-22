@@ -6,6 +6,9 @@ CREATE TABLE IF NOT EXISTS vaults (
   name TEXT NOT NULL,
   salt TEXT NOT NULL,
   verifier TEXT NOT NULL,
+  recovery_salt TEXT,
+  recovery_sealed_key TEXT,
+  recovery_created_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

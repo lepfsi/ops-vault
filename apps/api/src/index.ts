@@ -2,10 +2,15 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import type { SecretType } from "@ops-vault/core";
+import {
+  assertVaultBackup,
+  type RecoveryBundle,
+  type SecretType,
+  type VaultBackupV1,
+} from "@ops-vault/core";
 import { VaultStore } from "@ops-vault/db";
 import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 
 const dataDir = resolve(process.env.OPS_VAULT_DATA ?? "./data");
 mkdirSync(dataDir, { recursive: true });
@@ -30,7 +35,13 @@ app.get("/health", (c) => {
   return c.json({
     ok: true,
     service: "ops-vault-api",
-    vault: vault ? { id: vault.id, name: vault.name } : null,
+    vault: vault
+      ? {
+          id: vault.id,
+          name: vault.name,
+          hasRecovery: Boolean(vault.recovery),
+        }
+      : null,
     secrets: vault ? store.countSecrets(vault.id) : 0,
   });
 });
@@ -48,6 +59,7 @@ app.post("/vault", async (c) => {
     name?: string;
     salt: string;
     verifier: string;
+    recovery?: RecoveryBundle | null;
   }>();
 
   if (!body?.salt || !body?.verifier) {
@@ -59,11 +71,57 @@ app.post("/vault", async (c) => {
       name: body.name?.trim() || "OpsVault",
       salt: body.salt,
       verifier: body.verifier,
+      recovery: body.recovery ?? null,
     });
     return c.json({ vault }, 201);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to create vault";
     const status = msg.includes("already exists") ? 409 : 500;
+    return c.json({ error: msg }, status);
+  }
+});
+
+app.put("/vault/recovery", async (c) => {
+  const vault = store.getVault();
+  if (!vault) return c.json({ error: "No vault" }, 400);
+
+  const body = await c.req.json<{ recovery: RecoveryBundle | null }>();
+  store.setRecovery(vault.id, body.recovery ?? null);
+  const updated = store.getVault();
+  return c.json({ vault: updated });
+});
+
+// ── Backup export / import (ciphertext only) ──────────────
+
+app.get("/vault/export", (c) => {
+  try {
+    const backup = store.exportBackup();
+    return c.json(backup);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Export failed";
+    return c.json({ error: msg }, 400);
+  }
+});
+
+app.post("/vault/import", async (c) => {
+  const body = await c.req.json<{
+    backup: VaultBackupV1;
+    force?: boolean;
+  }>();
+
+  try {
+    assertVaultBackup(body.backup);
+    const result = store.importBackup(body.backup, { force: body.force });
+    return c.json(
+      {
+        vault: result.vault,
+        imported: result.imported,
+      },
+      body.force ? 200 : 201
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Import failed";
+    const status = msg.includes("already exists") ? 409 : 400;
     return c.json({ error: msg }, status);
   }
 });

@@ -1,6 +1,7 @@
 import {
   createOtpPayload,
   encryptPayload,
+  parseCertificatePem,
   type MasterKey,
   type SecretType,
 } from "@ops-vault/core";
@@ -17,6 +18,7 @@ const TYPES: { value: SecretType; label: string }[] = [
   { value: "password", label: "Mot de passe" },
   { value: "otp", label: "OTP / TOTP" },
   { value: "api_key", label: "Clé API" },
+  { value: "certificate", label: "Certificat X.509" },
   { value: "note", label: "Note" },
   { value: "ssh_key", label: "Clé SSH" },
   { value: "snippet", label: "Snippet" },
@@ -34,6 +36,7 @@ export function AddSecretForm({ masterKey, onCreated, onError }: Props) {
   const [apiKey, setApiKey] = useState("");
   const [sshKey, setSshKey] = useState("");
   const [snippet, setSnippet] = useState("");
+  const [certPem, setCertPem] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
@@ -67,6 +70,9 @@ export function AddSecretForm({ masterKey, onCreated, onError }: Props) {
         case "snippet":
           payload = { code: snippet };
           break;
+        case "certificate":
+          payload = parseCertificatePem(certPem);
+          break;
         default:
           payload = { notes: noteBody };
       }
@@ -82,6 +88,7 @@ export function AddSecretForm({ masterKey, onCreated, onError }: Props) {
       setApiKey("");
       setSshKey("");
       setSnippet("");
+      setCertPem("");
       onCreated();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Create failed");
@@ -204,6 +211,17 @@ export function AddSecretForm({ masterKey, onCreated, onError }: Props) {
           rows={4}
           required
           className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm"
+        />
+      )}
+
+      {type === "certificate" && (
+        <textarea
+          value={certPem}
+          onChange={(e) => setCertPem(e.target.value)}
+          rows={6}
+          required
+          placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs"
         />
       )}
 

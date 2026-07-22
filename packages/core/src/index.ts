@@ -1,17 +1,24 @@
 export type {
   ApiKeyPayload,
+  CertificatePayload,
   MasterKey,
   NotePayload,
   OtpPayload,
   PasswordPayload,
+  RecoveryBundle,
   SecretItem,
   SecretMeta,
   SecretPayload,
   SecretType,
+  SecretVaultId,
   SnippetPayload,
   SshKeyPayload,
   VaultAuthMaterial,
+  VaultBackupSecret,
+  VaultBackupV1,
   VaultRecord,
+  VaultRecordWithRecovery,
+  VaultSealedBackupV1,
 } from "./types.js";
 
 export {
@@ -49,3 +56,27 @@ export {
 } from "./otp.js";
 
 export { decryptPayload, encryptPayload } from "./secrets.js";
+
+export {
+  BACKUP_FORMAT,
+  BACKUP_VERSION,
+  SEALED_BACKUP_FORMAT,
+  assertVaultBackup,
+  backupToJson,
+  buildVaultBackup,
+  isSealedBackup,
+  isVaultBackup,
+  parseBackupJson,
+  sealBackup,
+  unsealBackup,
+  validateSecretType,
+} from "./backup.js";
+
+export {
+  certificateSummary,
+  extractPemBlocks,
+  isLikelyCertificatePem,
+  parseCertificatePem,
+} from "./certificate.js";
+
+export { createRecoveryBundle, unlockWithRecovery } from "./recovery.js";

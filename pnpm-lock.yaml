@@ -45,6 +45,9 @@ importers:
       '@ops-vault/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@ops-vault/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       react:
         specifier: ^19.1.0
         version: 19.2.8
@@ -106,7 +109,20 @@ importers:
         version: 5.9.3
 
   packages/ui:
+    dependencies:
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.8(react@19.2.8)
     devDependencies:
+      '@types/react':
+        specifier: ^19.1.8
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.1.6
+        version: 19.2.3(@types/react@19.2.17)
+      react:
+        specifier: ^19.1.0
+        version: 19.2.8
       typescript:
         specifier: ^5.8.3
         version: 5.9.3

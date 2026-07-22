@@ -1,10 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type {
+  RecoveryBundle,
   SecretItem,
   SecretMeta,
   SecretType,
+  VaultBackupV1,
   VaultRecord,
+  VaultRecordWithRecovery,
 } from "@ops-vault/core";
 import { SCHEMA_SQL } from "./schema.js";
 
@@ -12,6 +15,7 @@ export interface CreateVaultInput {
   name: string;
   salt: string;
   verifier: string;
+  recovery?: RecoveryBundle | null;
 }
 
 export interface CreateSecretInput {
@@ -28,11 +32,19 @@ export interface UpdateSecretInput {
   tags?: string[];
 }
 
+export interface ImportBackupResult {
+  vault: VaultRecord;
+  imported: number;
+}
+
 type VaultRow = {
   id: string;
   name: string;
   salt: string;
   verifier: string;
+  recovery_salt: string | null;
+  recovery_sealed_key: string | null;
+  recovery_created_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -48,7 +60,16 @@ type SecretRow = {
   updated_at: string;
 };
 
-function mapVault(row: VaultRow): VaultRecord {
+function mapVault(row: VaultRow): VaultRecordWithRecovery {
+  const recovery =
+    row.recovery_salt && row.recovery_sealed_key
+      ? {
+          salt: row.recovery_salt,
+          sealedKey: row.recovery_sealed_key,
+          createdAt: row.recovery_created_at ?? row.created_at,
+        }
+      : null;
+
   return {
     id: row.id,
     name: row.name,
@@ -56,6 +77,7 @@ function mapVault(row: VaultRow): VaultRecord {
     verifier: row.verifier,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    recovery,
   };
 }
 
@@ -77,6 +99,10 @@ function mapSecretMeta(row: SecretRow): SecretMeta {
   return meta;
 }
 
+const VAULT_SELECT = `SELECT id, name, salt, verifier,
+  recovery_salt, recovery_sealed_key, recovery_created_at,
+  created_at, updated_at FROM vaults`;
+
 /**
  * SQLite-backed store (Node.js `node:sqlite`, Node ≥ 22).
  * Stores vault auth material + ciphertext only.
@@ -88,6 +114,23 @@ export class VaultStore {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA_SQL);
+    this.migrate();
+  }
+
+  private migrate(): void {
+    const cols = this.db
+      .prepare("PRAGMA table_info(vaults)")
+      .all() as unknown as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("recovery_salt")) {
+      this.db.exec("ALTER TABLE vaults ADD COLUMN recovery_salt TEXT");
+    }
+    if (!names.has("recovery_sealed_key")) {
+      this.db.exec("ALTER TABLE vaults ADD COLUMN recovery_sealed_key TEXT");
+    }
+    if (!names.has("recovery_created_at")) {
+      this.db.exec("ALTER TABLE vaults ADD COLUMN recovery_created_at TEXT");
+    }
   }
 
   close(): void {
@@ -96,25 +139,21 @@ export class VaultStore {
 
   // ── Vaults ──────────────────────────────────────────────
 
-  getVault(): VaultRecord | null {
+  getVault(): VaultRecordWithRecovery | null {
     const row = this.db
-      .prepare(
-        "SELECT id, name, salt, verifier, created_at, updated_at FROM vaults LIMIT 1"
-      )
+      .prepare(`${VAULT_SELECT} LIMIT 1`)
       .get() as unknown as VaultRow | undefined;
     return row ? mapVault(row) : null;
   }
 
-  getVaultById(id: string): VaultRecord | null {
+  getVaultById(id: string): VaultRecordWithRecovery | null {
     const row = this.db
-      .prepare(
-        "SELECT id, name, salt, verifier, created_at, updated_at FROM vaults WHERE id = ?"
-      )
+      .prepare(`${VAULT_SELECT} WHERE id = ?`)
       .get(id) as unknown as VaultRow | undefined;
     return row ? mapVault(row) : null;
   }
 
-  createVault(input: CreateVaultInput): VaultRecord {
+  createVault(input: CreateVaultInput): VaultRecordWithRecovery {
     const existing = this.getVault();
     if (existing) {
       throw new Error("Vault already exists");
@@ -122,12 +161,26 @@ export class VaultStore {
 
     const now = new Date().toISOString();
     const id = randomUUID();
+    const rec = input.recovery;
     this.db
       .prepare(
-        `INSERT INTO vaults (id, name, salt, verifier, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO vaults (
+          id, name, salt, verifier,
+          recovery_salt, recovery_sealed_key, recovery_created_at,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(id, input.name, input.salt, input.verifier, now, now);
+      .run(
+        id,
+        input.name,
+        input.salt,
+        input.verifier,
+        rec?.salt ?? null,
+        rec?.sealedKey ?? null,
+        rec?.createdAt ?? null,
+        now,
+        now
+      );
 
     return {
       id,
@@ -136,7 +189,34 @@ export class VaultStore {
       verifier: input.verifier,
       createdAt: now,
       updatedAt: now,
+      recovery: rec ?? null,
     };
+  }
+
+  setRecovery(vaultId: string, recovery: RecoveryBundle | null): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE vaults SET
+          recovery_salt = ?,
+          recovery_sealed_key = ?,
+          recovery_created_at = ?,
+          updated_at = ?
+        WHERE id = ?`
+      )
+      .run(
+        recovery?.salt ?? null,
+        recovery?.sealedKey ?? null,
+        recovery?.createdAt ?? null,
+        now,
+        vaultId
+      );
+  }
+
+  /** Wipe vault + secrets (import --force). */
+  clearAll(): void {
+    this.db.exec("DELETE FROM secrets");
+    this.db.exec("DELETE FROM vaults");
   }
 
   // ── Secrets ─────────────────────────────────────────────
@@ -149,6 +229,17 @@ export class VaultStore {
       )
       .all(vaultId) as unknown as SecretRow[];
     return rows.map(mapSecretMeta);
+  }
+
+  /** Full secrets including ciphertext (for export only). */
+  listSecretsFull(vaultId: string): SecretItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, vault_id, type, title, encrypted_data, tags, created_at, updated_at
+         FROM secrets WHERE vault_id = ? ORDER BY title COLLATE NOCASE`
+      )
+      .all(vaultId) as unknown as SecretRow[];
+    return rows.map(mapSecret);
   }
 
   getSecret(id: string): SecretItem | null {
@@ -242,5 +333,64 @@ export class VaultStore {
       .prepare("SELECT COUNT(*) AS c FROM secrets")
       .get() as unknown as { c: number | bigint };
     return Number(row.c);
+  }
+
+  // ── Backup ──────────────────────────────────────────────
+
+  exportBackup(): VaultBackupV1 {
+    const vault = this.getVault();
+    if (!vault) {
+      throw new Error("No vault to export");
+    }
+    const secrets = this.listSecretsFull(vault.id);
+    return {
+      format: "ops-vault-backup",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      vault: {
+        name: vault.name,
+        salt: vault.salt,
+        verifier: vault.verifier,
+      },
+      secrets: secrets.map((s) => ({
+        type: s.type,
+        title: s.title,
+        encryptedData: s.encryptedData,
+        tags: s.tags,
+      })),
+    };
+  }
+
+  importBackup(
+    backup: VaultBackupV1,
+    options?: { force?: boolean }
+  ): ImportBackupResult {
+    const existing = this.getVault();
+    if (existing && !options?.force) {
+      throw new Error("Vault already exists — use force to replace");
+    }
+    if (existing && options?.force) {
+      this.clearAll();
+    }
+
+    const vault = this.createVault({
+      name: backup.vault.name,
+      salt: backup.vault.salt,
+      verifier: backup.vault.verifier,
+    });
+
+    let imported = 0;
+    for (const s of backup.secrets) {
+      this.createSecret({
+        vaultId: vault.id,
+        type: s.type,
+        title: s.title,
+        encryptedData: s.encryptedData,
+        tags: s.tags,
+      });
+      imported++;
+    }
+
+    return { vault, imported };
   }
 }

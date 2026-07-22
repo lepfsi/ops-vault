@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AddSecretForm } from "./components/AddSecretForm";
 import { AuthPanel } from "./components/AuthPanel";
+import { BackupPanel } from "./components/BackupPanel";
 import { SecretList } from "./components/SecretList";
 import { useVaultSession } from "./hooks/useVaultSession";
 
@@ -64,15 +65,11 @@ export default function App() {
           </button>
         )}
 
-        {session.phase === "unlocked" && session.key && (
+        {session.phase === "unlocked" && session.key && session.vault && (
           <>
             <p className="text-sm text-emerald-400">
               Coffre déverrouillé — clé en mémoire uniquement.
-              {session.vault && (
-                <span className="ml-2 text-slate-500">
-                  ({session.vault.name})
-                </span>
-              )}
+              <span className="ml-2 text-slate-500">({session.vault.name})</span>
             </p>
 
             <AddSecretForm
@@ -97,6 +94,17 @@ export default function App() {
                 onError={session.setError}
               />
             </section>
+
+            <BackupPanel
+              masterKey={session.key}
+              vault={session.vault}
+              onImported={() => {
+                setRefreshToken((n) => n + 1);
+                void session.refreshVault();
+              }}
+              onError={session.setError}
+              onRecoveryUpdated={() => void session.refreshVault()}
+            />
           </>
         )}
       </main>

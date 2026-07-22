@@ -8,8 +8,9 @@ Fait partie de la suite produit **DailyOps** (séparé d’OpsGate mais même é
 
 - Zero-knowledge (chiffrement côté client)
 - Pensé par un administrateur système
-- Support natif : mots de passe, clés SSH, certificats, clés API, OTP, snippets, notes sécurisées
+- Support natif : mots de passe, clés SSH, certificats, clés API, OTP, snippets, notes
 - Local-first + self-hosted
+- Export / import portable + recovery key
 
 ## Stack
 
@@ -18,56 +19,74 @@ Fait partie de la suite produit **DailyOps** (séparé d’OpsGate mais même é
 - Backend : Hono + TypeScript
 - Core : `@noble/ciphers` + Argon2id + `otpauth`
 - DB : SQLite via `node:sqlite` (Node ≥ 22)
-
-## Structure
-
-```
-ops-vault/
-├── apps/
-│   ├── web/          # Frontend Vite + React
-│   └── api/          # Backend Hono
-├── packages/
-│   ├── core/         # Crypto, OTP, vault auth, types
-│   ├── db/           # SQLite VaultStore
-│   ├── ui/           # Composants UI partagés
-│   └── config/       # Config partagée
-```
+- UI : `@ops-vault/ui` (composants partagés)
 
 ## Développement
-
-Prérequis : **Node.js ≥ 22**, pnpm 10.
 
 ```bash
 pnpm install
 pnpm --filter @ops-vault/core build
 pnpm --filter @ops-vault/db build
+pnpm --filter @ops-vault/ui build
 pnpm dev
 ```
 
 - **Web** : http://localhost:5173  
 - **API** : http://localhost:8787  
-- **SQLite** : `./data/ops-vault.db` (configurable via `OPS_VAULT_DATA`)
+- **SQLite** : `./data/ops-vault.db` (`OPS_VAULT_DATA`)
 
-## Auth vault (zero-knowledge)
+## Auth vault
 
-1. **Setup** (client) : `createVaultAuth(password)` → salt + clé + vérificateur chiffré  
-2. **API** stocke uniquement `{ salt, verifier }` — jamais le mot de passe  
-3. **Unlock** (client) : `unlockVault(password, salt, verifier)` → dérive la clé et valide le vérificateur  
+1. **Setup** : `createVaultAuth(password)` → salt + vérificateur chiffré  
+2. **API** stocke `{ salt, verifier }` uniquement  
+3. **Unlock** : `unlockVault(password, salt, verifier)` côté client  
 
-## Secrets
+## Backup
 
-- Payloads chiffrés avec `encryptPayload` / `decryptPayload`  
-- Types : password, otp, api_key, note, ssh_key, snippet, certificate  
-- L’API ne voit que du ciphertext  
+| Type | Description |
+|------|-------------|
+| **Plain backup** | JSON `ops-vault-backup` — salt, verifier, ciphertexts |
+| **Sealed backup** | JSON `ops-vault-sealed-backup` — couche export Argon2id + AES-GCM |
 
-## OTP / TOTP
+```
+GET  /vault/export
+POST /vault/import   { backup, force? }
+```
 
-- `createOtpPayload`, `generateTotp`, `verifyTotp`, `otpauthUri`  
-- Codes live dans l’UI après déchiffrement côté client  
+Le MDP maître n’est jamais dans le fichier. Un backup scellé nécessite le **mot de passe d’export**.
 
-## Crypto (`@ops-vault/core`)
+## Recovery key
 
-- **Dérivation** : Argon2id (64 MiB, t=3) → clé AES-256  
-- **Chiffrement** : AES-256-GCM (`@noble/ciphers`)  
-- **Format ciphertext** : `base64(nonce 12B ‖ ciphertext+tag)`  
-- La clé maître ne quitte jamais le client.
+- `createRecoveryBundle(masterKey, recoveryPassword)` → scelle la clé maître  
+- Stockage serveur : `recovery_salt` + `recovery_sealed_key`  
+- `unlockWithRecovery(bundle, recoveryPassword)` pour break-glass  
+
+```
+PUT /vault/recovery  { recovery }
+```
+
+## Certificats
+
+- Type secret `certificate`
+- `parseCertificatePem` : validation PEM + empreinte SHA-256 DER
+- Clé privée PEM optionnelle dans le même payload
+
+## OTP
+
+- `createOtpPayload`, `generateTotp`, `verifyTotp`, `otpauthUri`
+
+## Crypto
+
+- Argon2id (64 MiB, t=3) → AES-256-GCM  
+- Format : `base64(nonce 12B ‖ ciphertext+tag)`  
+- La clé maître ne quitte jamais le client (sauf recovery scellée côté serveur)
+
+## Structure
+
+```
+apps/web          UI
+apps/api          Hono + SQLite
+packages/core     crypto, OTP, backup, cert, recovery
+packages/db       VaultStore
+packages/ui       Button, Card, Badge, Input
+```

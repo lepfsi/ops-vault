@@ -91,6 +91,21 @@ export interface SnippetPayload {
   code: string;
 }
 
+/** X.509 / PEM certificate material (fields beyond PEM are best-effort). */
+export interface CertificatePayload {
+  pem: string;
+  privateKeyPem?: string;
+  fingerprintSha256?: string;
+  derLength?: number;
+  label?: string;
+  subject?: string;
+  issuer?: string;
+  notBefore?: string;
+  notAfter?: string;
+  serialNumber?: string;
+  notes?: string;
+}
+
 export type SecretPayload =
   | PasswordPayload
   | OtpPayload
@@ -98,4 +113,50 @@ export type SecretPayload =
   | SshKeyPayload
   | ApiKeyPayload
   | SnippetPayload
+  | CertificatePayload
   | Record<string, unknown>;
+
+/** Secret entry inside a portable backup (no server ids). */
+export interface VaultBackupSecret {
+  type: SecretType;
+  title: string;
+  encryptedData: string;
+  tags?: string[];
+}
+
+/** Portable vault backup — still zero-knowledge (ciphertexts only). */
+export interface VaultBackupV1 {
+  format: "ops-vault-backup";
+  version: 1;
+  exportedAt: string;
+  vault: {
+    name: string;
+    salt: string;
+    verifier: string;
+  };
+  secrets: VaultBackupSecret[];
+}
+
+/**
+ * Backup sealed with a separate export passphrase.
+ * Outer layer protects salt/verifier in transit; inner secrets stay master-key ciphertext.
+ */
+export interface VaultSealedBackupV1 {
+  format: "ops-vault-sealed-backup";
+  version: 1;
+  exportedAt: string;
+  salt: string;
+  payload: string;
+}
+
+/** Recovery bundle: master key sealed under a recovery passphrase. */
+export interface RecoveryBundle {
+  salt: string;
+  sealedKey: string;
+  createdAt: string;
+}
+
+/** Extended vault record with optional recovery material (multi-admin later). */
+export interface VaultRecordWithRecovery extends VaultRecord {
+  recovery?: RecoveryBundle | null;
+}

@@ -3,9 +3,9 @@ import {
   unlockVault,
   wipeKey,
   type MasterKey,
-  type VaultRecord,
+  type VaultRecordWithRecovery,
 } from "@ops-vault/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 
 export type VaultPhase =
@@ -18,18 +18,25 @@ export type VaultPhase =
 
 export function useVaultSession() {
   const [phase, setPhase] = useState<VaultPhase>("loading");
-  const [vault, setVault] = useState<VaultRecord | null>(null);
+  const [vault, setVault] = useState<VaultRecordWithRecovery | null>(null);
   const [key, setKey] = useState<MasterKey | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const unlockedRef = useRef(false);
 
   const refreshVault = useCallback(async () => {
     setError(null);
     try {
       const { vault: v } = await api.getVault();
       setVault(v);
-      setPhase(v ? "locked" : "setup");
+      if (unlockedRef.current && v) {
+        setPhase("unlocked");
+      } else {
+        setPhase(v ? "locked" : "setup");
+        unlockedRef.current = false;
+      }
     } catch (err) {
       setPhase("error");
+      unlockedRef.current = false;
       setError(
         err instanceof Error
           ? err.message
@@ -53,11 +60,13 @@ export function useVaultSession() {
           salt: auth.saltB64,
           verifier: auth.verifier,
         });
-        setVault(v);
+        setVault(v as VaultRecordWithRecovery);
         setKey(auth.key);
+        unlockedRef.current = true;
         setPhase("unlocked");
       } catch (err) {
         setPhase("setup");
+        unlockedRef.current = false;
         setError(err instanceof Error ? err.message : "Setup failed");
       }
     },
@@ -73,8 +82,10 @@ export function useVaultSession() {
         if (key) wipeKey(key);
         const master = await unlockVault(password, vault.salt, vault.verifier);
         setKey(master);
+        unlockedRef.current = true;
         setPhase("unlocked");
       } catch (err) {
+        unlockedRef.current = false;
         setPhase("locked");
         setError(err instanceof Error ? err.message : "Unlock failed");
       }
@@ -85,6 +96,7 @@ export function useVaultSession() {
   const lock = useCallback(() => {
     if (key) wipeKey(key);
     setKey(null);
+    unlockedRef.current = false;
     setPhase(vault ? "locked" : "setup");
   }, [key, vault]);
 

@@ -13,9 +13,10 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
 Write-Host "==> pnpm install"
 pnpm install
 
-Write-Host "==> build core + db"
+Write-Host "==> build core + db + ui"
 pnpm --filter @ops-vault/core build
 pnpm --filter @ops-vault/db build
+pnpm --filter @ops-vault/ui build
 
 Write-Host "==> typecheck api + web"
 pnpm --filter @ops-vault/api typecheck
@@ -29,12 +30,13 @@ git add -A
 $pending = git status --porcelain
 if ($pending) {
   git commit -m @"
-feat: OTP, SQLite VaultStore, vault auth + type fixes
+feat: encrypted export/import, recovery keys, cert PEM, ui kit
 
-- core: createVaultAuth/unlockVault, TOTP (otpauth), encryptPayload
-- core: MasterKey / noble Uint8Array cast fixes for TS 5.9
-- db: VaultStore on node:sqlite with stable DatabaseSync typing
-- api/web: vault setup-unlock flow, secrets UI, live OTP codes
+- core: sealBackup/unsealBackup, parseBackupJson, recovery bundle
+- core: parseCertificatePem (SHA-256 fingerprint)
+- db/api: GET /vault/export, POST /vault/import, PUT /vault/recovery
+- web: BackupPanel + certificate secret type
+- ui: Button, Card, Badge, Input package
 "@
   Write-Host "==> committed"
 } else {
@@ -48,4 +50,3 @@ git push -u origin main
 Write-Host "==> done"
 git rev-parse HEAD
 git log -1 --oneline
-git remote get-url origin

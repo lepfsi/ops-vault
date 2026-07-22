@@ -1,6 +1,8 @@
 import {
+  certificateSummary,
   decryptPayload,
   generateTotp,
+  type CertificatePayload,
   type MasterKey,
   type OtpPayload,
   type PasswordPayload,
@@ -73,6 +75,20 @@ export function SecretList({ masterKey, refreshToken, onError }: Props) {
         setRevealed(
           [p.username && `user: ${p.username}`, `pass: ${p.password}`]
             .filter(Boolean)
+            .join("\n")
+        );
+        setOtpPayload(null);
+      } else if (item.type === "certificate") {
+        const cert = payload as CertificatePayload;
+        setRevealed(
+          [
+            certificateSummary(cert),
+            cert.fingerprintSha256 && `sha256: ${cert.fingerprintSha256}`,
+            cert.privateKeyPem ? "private key: present" : "private key: none",
+            "",
+            cert.pem,
+          ]
+            .filter((x) => x !== undefined)
             .join("\n")
         );
         setOtpPayload(null);
