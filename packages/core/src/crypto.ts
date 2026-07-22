@@ -31,13 +31,19 @@ export const ARGON2_PARAMS = {
   dkLen: KEY_LENGTH,
 } as const;
 
+/** Strip brand for noble APIs (TS 5.9 generic Uint8Array variance). */
+function asBytes(key: MasterKey | Uint8Array): Uint8Array {
+  return key as Uint8Array;
+}
+
 function asMasterKey(bytes: Uint8Array): MasterKey {
   if (bytes.length !== KEY_LENGTH) {
     throw new Error(
       `MasterKey must be ${KEY_LENGTH} bytes, got ${bytes.length}`
     );
   }
-  return bytes as MasterKey;
+  // Copy into a plain Uint8Array so brand + buffer typing stay stable.
+  return new Uint8Array(bytes) as MasterKey;
 }
 
 /** Cryptographically secure random salt for master-key derivation. */
@@ -63,8 +69,10 @@ export async function deriveMasterKey(
   // argon2id is sync/CPU-heavy — yield to the event loop first
   await Promise.resolve();
 
-  const derived = argon2id(utf8ToBytes(password), salt, { ...ARGON2_PARAMS });
-  return asMasterKey(derived);
+  const derived = argon2id(utf8ToBytes(password), asBytes(salt), {
+    ...ARGON2_PARAMS,
+  });
+  return asMasterKey(asBytes(derived));
 }
 
 /**
@@ -81,9 +89,9 @@ export async function encrypt(
 
   await Promise.resolve();
 
-  const nonce = randomBytes(NONCE_LENGTH);
-  const aes = gcm(key, nonce);
-  const ciphertext = aes.encrypt(utf8ToBytes(plaintext));
+  const nonce = asBytes(randomBytes(NONCE_LENGTH));
+  const aes = gcm(asBytes(key), nonce);
+  const ciphertext = asBytes(aes.encrypt(utf8ToBytes(plaintext)));
 
   const packed = new Uint8Array(nonce.length + ciphertext.length);
   packed.set(nonce, 0);
@@ -113,11 +121,11 @@ export async function decrypt(
 
   const nonce = packed.subarray(0, NONCE_LENGTH);
   const data = packed.subarray(NONCE_LENGTH);
-  const aes = gcm(key, nonce);
+  const aes = gcm(asBytes(key), nonce);
 
   try {
     const plain = aes.decrypt(data);
-    return bytesToUtf8(plain);
+    return bytesToUtf8(asBytes(plain));
   } catch {
     throw new Error("Decryption failed — wrong key or corrupted data");
   }
@@ -125,5 +133,5 @@ export async function decrypt(
 
 /** Best-effort wipe of key material (GC may still retain copies). */
 export function wipeKey(key: MasterKey): void {
-  key.fill(0);
+  asBytes(key).fill(0);
 }

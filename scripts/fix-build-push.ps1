@@ -1,5 +1,4 @@
-# Install, build packages, typecheck, commit & push
-# Run: powershell -ExecutionPolicy Bypass -File scripts/bootstrap-and-push.ps1
+# Install, rebuild, typecheck, commit & push OpsVault
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
@@ -22,9 +21,6 @@ Write-Host "==> typecheck api + web"
 pnpm --filter @ops-vault/api typecheck
 pnpm --filter @ops-vault/web typecheck
 
-Write-Host "==> git status"
-git status
-
 if (-not (git remote get-url origin 2>$null)) {
   git remote add origin https://github.com/lepfsi/ops-vault.git
 }
@@ -32,12 +28,14 @@ if (-not (git remote get-url origin 2>$null)) {
 git add -A
 $pending = git status --porcelain
 if ($pending) {
-  git commit -m "feat: OTP, SQLite persistence, vault auth, secrets UI
+  git commit -m @"
+feat: OTP, SQLite VaultStore, vault auth + type fixes
 
-- core: createVaultAuth/unlockVault, TOTP helpers, encryptPayload
-- db: VaultStore on node:sqlite (vaults + secrets ciphertext)
-- api: /vault + /secrets wired to db
-- web: setup/unlock flow, add secrets, live OTP codes"
+- core: createVaultAuth/unlockVault, TOTP (otpauth), encryptPayload
+- core: MasterKey / noble Uint8Array cast fixes for TS 5.9
+- db: VaultStore on node:sqlite with stable DatabaseSync typing
+- api/web: vault setup-unlock flow, secrets UI, live OTP codes
+"@
   Write-Host "==> committed"
 } else {
   Write-Host "==> nothing new to commit"
@@ -50,3 +48,4 @@ git push -u origin main
 Write-Host "==> done"
 git rev-parse HEAD
 git log -1 --oneline
+git remote get-url origin

@@ -1,18 +1,30 @@
 # @ops-vault/api
 
-Backend OpsVault — Hono + TypeScript.
+Backend OpsVault — Hono + `@ops-vault/db`.
 
 ## Principes
 
-- Stocke **uniquement** du ciphertext (`encryptedData`)
+- Stocke **uniquement** salt, vérificateur et ciphertext
 - Pas de mot de passe maître côté serveur
-- Store mémoire pour le MVP (sera remplacé par `@ops-vault/db`)
+- SQLite local (`OPS_VAULT_DATA` / `./data/ops-vault.db`)
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Santé + stats |
+| GET | `/vault` | Vault auth material ou null |
+| POST | `/vault` | Init vault `{ name?, salt, verifier }` |
+| GET | `/secrets` | Liste métadonnées (sans ciphertext) |
+| GET | `/secrets/:id` | Secret complet (ciphertext) |
+| POST | `/secrets` | Créer (ciphertext required) |
+| PATCH | `/secrets/:id` | MAJ titre / ciphertext / tags |
+| DELETE | `/secrets/:id` | Supprimer |
 
 ## Dev
 
 ```bash
-# depuis la racine du monorepo
 pnpm --filter @ops-vault/api dev
 ```
 
-Écoute sur `http://localhost:8787` par défaut.
+Node ≥ 22 requis (`node:sqlite`).

@@ -16,7 +16,8 @@ Fait partie de la suite produit **DailyOps** (séparé d’OpsGate mais même é
 - Monorepo : pnpm + Turborepo
 - Frontend : Vite + React + TypeScript + Tailwind
 - Backend : Hono + TypeScript
-- Core : `@noble/ciphers` + Argon2id
+- Core : `@noble/ciphers` + Argon2id + `otpauth`
+- DB : SQLite via `node:sqlite` (Node ≥ 22)
 
 ## Structure
 
@@ -26,32 +27,43 @@ ops-vault/
 │   ├── web/          # Frontend Vite + React
 │   └── api/          # Backend Hono
 ├── packages/
-│   ├── core/         # Crypto + types secrets (@ops-vault/core)
-│   ├── db/           # Accès données
+│   ├── core/         # Crypto, OTP, vault auth, types
+│   ├── db/           # SQLite VaultStore
 │   ├── ui/           # Composants UI partagés
-│   └── config/       # Config partagée (TS, ESLint, etc.)
-├── package.json
-├── pnpm-workspace.yaml
-└── turbo.json
+│   └── config/       # Config partagée
 ```
 
 ## Développement
 
+Prérequis : **Node.js ≥ 22**, pnpm 10.
+
 ```bash
 pnpm install
+pnpm --filter @ops-vault/core build
+pnpm --filter @ops-vault/db build
 pnpm dev
 ```
 
 - **Web** : http://localhost:5173  
 - **API** : http://localhost:8787  
+- **SQLite** : `./data/ops-vault.db` (configurable via `OPS_VAULT_DATA`)
 
-Autres scripts :
+## Auth vault (zero-knowledge)
 
-```bash
-pnpm build
-pnpm lint
-pnpm typecheck
-```
+1. **Setup** (client) : `createVaultAuth(password)` → salt + clé + vérificateur chiffré  
+2. **API** stocke uniquement `{ salt, verifier }` — jamais le mot de passe  
+3. **Unlock** (client) : `unlockVault(password, salt, verifier)` → dérive la clé et valide le vérificateur  
+
+## Secrets
+
+- Payloads chiffrés avec `encryptPayload` / `decryptPayload`  
+- Types : password, otp, api_key, note, ssh_key, snippet, certificate  
+- L’API ne voit que du ciphertext  
+
+## OTP / TOTP
+
+- `createOtpPayload`, `generateTotp`, `verifyTotp`, `otpauthUri`  
+- Codes live dans l’UI après déchiffrement côté client  
 
 ## Crypto (`@ops-vault/core`)
 
