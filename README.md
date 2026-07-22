@@ -42,6 +42,9 @@ pnpm install
 pnpm dev
 ```
 
+- **Web** : http://localhost:5173  
+- **API** : http://localhost:8787  
+
 Autres scripts :
 
 ```bash
@@ -49,3 +52,10 @@ pnpm build
 pnpm lint
 pnpm typecheck
 ```
+
+## Crypto (`@ops-vault/core`)
+
+- **Dérivation** : Argon2id (64 MiB, t=3) → clé AES-256  
+- **Chiffrement** : AES-256-GCM (`@noble/ciphers`)  
+- **Format ciphertext** : `base64(nonce 12B ‖ ciphertext+tag)`  
+- La clé maître ne quitte jamais le client.

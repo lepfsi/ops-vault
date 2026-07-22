@@ -1,40 +1,20 @@
-export type SecretType =
-  | "password"
-  | "ssh_key"
-  | "api_key"
-  | "certificate"
-  | "note"
-  | "otp"
-  | "snippet";
+export type { MasterKey, SecretItem, SecretType } from "./types.js";
 
-export interface SecretItem {
-  id: string;
-  type: SecretType;
-  title: string;
-  encryptedData: string; // toujours chiffré
-  createdAt: string;
-  updatedAt: string;
-  tags?: string[];
-}
+export {
+  ARGON2_PARAMS,
+  KEY_LENGTH,
+  NONCE_LENGTH,
+  SALT_LENGTH,
+  decrypt,
+  deriveMasterKey,
+  encrypt,
+  generateSalt,
+  wipeKey,
+} from "./crypto.js";
 
-// === À implémenter juste après ===
-export async function deriveMasterKey(
-  password: string,
-  salt: Uint8Array
-): Promise<CryptoKey> {
-  throw new Error("Not implemented yet – next step");
-}
-
-export async function encrypt(
-  plaintext: string,
-  key: CryptoKey
-): Promise<string> {
-  throw new Error("Not implemented yet – next step");
-}
-
-export async function decrypt(
-  ciphertext: string,
-  key: CryptoKey
-): Promise<string> {
-  throw new Error("Not implemented yet – next step");
-}
+export {
+  base64ToBytes,
+  bytesToBase64,
+  bytesToUtf8,
+  utf8ToBytes,
+} from "./encoding.js";

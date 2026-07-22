@@ -4,9 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "echo \"@ops-vault/web: Vite app — scaffold next\"",
-    "build": "echo \"@ops-vault/web: build — scaffold next\"",
-    "typecheck": "echo \"@ops-vault/web: typecheck — scaffold next\"",
-    "lint": "echo \"@ops-vault/web: lint — scaffold next\""
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"lint: not configured yet\""
+  },
+  "dependencies": {
+    "@ops-vault/core": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.11",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "tailwindcss": "^4.1.11",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.4"
   }
 }
