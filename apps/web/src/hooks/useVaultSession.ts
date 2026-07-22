@@ -84,10 +84,12 @@ export function useVaultSession() {
         setKey(master);
         unlockedRef.current = true;
         setPhase("unlocked");
+        void api.reportUnlock("ok").catch(() => undefined);
       } catch (err) {
         unlockedRef.current = false;
         setPhase("locked");
         setError(err instanceof Error ? err.message : "Unlock failed");
+        void api.reportUnlock("fail").catch(() => undefined);
       }
     },
     [vault, key]
@@ -100,6 +102,16 @@ export function useVaultSession() {
     setPhase(vault ? "locked" : "setup");
   }, [key, vault]);
 
+  const replaceKey = useCallback(
+    (newKey: MasterKey) => {
+      if (key && key !== newKey) wipeKey(key);
+      setKey(newKey);
+      unlockedRef.current = true;
+      setPhase("unlocked");
+    },
+    [key]
+  );
+
   return {
     phase,
     vault,
@@ -110,5 +122,6 @@ export function useVaultSession() {
     unlock,
     lock,
     refreshVault,
+    replaceKey,
   };
 }

@@ -26,4 +26,15 @@ CREATE TABLE IF NOT EXISTS secrets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_secrets_vault ON secrets(vault_id);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  at TEXT NOT NULL,
+  action TEXT NOT NULL,
+  detail TEXT,
+  ip TEXT,
+  user_agent TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
 `;

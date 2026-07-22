@@ -3,6 +3,7 @@ import { AddSecretForm } from "./components/AddSecretForm";
 import { AuthPanel } from "./components/AuthPanel";
 import { BackupPanel } from "./components/BackupPanel";
 import { SecretList } from "./components/SecretList";
+import { SecurityPanel } from "./components/SecurityPanel";
 import { useVaultSession } from "./hooks/useVaultSession";
 
 export default function App() {
@@ -104,6 +105,16 @@ export default function App() {
               }}
               onError={session.setError}
               onRecoveryUpdated={() => void session.refreshVault()}
+            />
+
+            <SecurityPanel
+              masterKey={session.key}
+              onRekeyed={(newKey) => {
+                session.replaceKey(newKey);
+                void session.refreshVault();
+                setRefreshToken((n) => n + 1);
+              }}
+              onError={session.setError}
             />
           </>
         )}

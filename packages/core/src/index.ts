@@ -80,3 +80,11 @@ export {
 } from "./certificate.js";
 
 export { createRecoveryBundle, unlockWithRecovery } from "./recovery.js";
+
+export type { PasswordRotationResult, RotatedSecret } from "./rotate.js";
+export {
+  VAULT_CANARY_PLAINTEXT,
+  createVaultCanary,
+  rotateMasterPassword,
+  verifyVaultCanary,
+} from "./rotate.js";

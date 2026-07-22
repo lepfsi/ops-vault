@@ -100,3 +100,55 @@ export async function createSecret(body: {
 export async function deleteSecret(id: string): Promise<{ ok: boolean }> {
   return request(`/secrets/${id}`, { method: "DELETE" });
 }
+
+export async function reportUnlock(result: "ok" | "fail", detail?: string) {
+  return request<{ ok: boolean }>("/vault/session", {
+    method: "POST",
+    body: JSON.stringify({ result, detail }),
+  });
+}
+
+export async function rekeyVault(body: {
+  salt: string;
+  verifier: string;
+  secrets: Array<{ id: string; encryptedData: string }>;
+  clearRecovery?: boolean;
+}): Promise<{ vault: VaultRecordWithRecovery }> {
+  return request("/vault/rekey", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listSecretsFull(): Promise<SecretItem[]> {
+  const { items } = await listSecrets();
+  const full: SecretItem[] = [];
+  for (const meta of items) {
+    full.push(await getSecret(meta.id));
+  }
+  return full;
+}
+
+export interface AuditEvent {
+  id: string;
+  at: string;
+  action: string;
+  detail?: string;
+  ip?: string;
+  userAgent?: string;
+}
+
+export async function getAudit(limit = 40): Promise<{
+  events: AuditEvent[];
+  summary: {
+    unlockOk: number;
+    unlockFail: number;
+    exports: number;
+    imports: number;
+    rekeys: number;
+    secretReads: number;
+  };
+  note: string;
+}> {
+  return request(`/audit?limit=${limit}`);
+}

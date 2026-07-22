@@ -30,13 +30,12 @@ git add -A
 $pending = git status --porcelain
 if ($pending) {
   git commit -m @"
-feat: encrypted export/import, recovery keys, cert PEM, ui kit
+feat: audit log, unlock telemetry, master password rekey
 
-- core: sealBackup/unsealBackup, parseBackupJson, recovery bundle
-- core: parseCertificatePem (SHA-256 fingerprint)
-- db/api: GET /vault/export, POST /vault/import, PUT /vault/recovery
-- web: BackupPanel + certificate secret type
-- ui: Button, Card, Badge, Input package
+- Honest ZK limit: offline password crack leaves no server trace
+- db/api: audit_events, GET /audit, POST /vault/session, POST /vault/rekey
+- core: rotateMasterPassword
+- web: SecurityPanel with audit + password rotation
 "@
   Write-Host "==> committed"
 } else {

@@ -37,6 +37,38 @@ export interface ImportBackupResult {
   imported: number;
 }
 
+export type AuditAction =
+  | "vault.create"
+  | "vault.export"
+  | "vault.import"
+  | "vault.recovery.set"
+  | "vault.recovery.clear"
+  | "vault.rekey"
+  | "vault.unlock.ok"
+  | "vault.unlock.fail"
+  | "secret.list"
+  | "secret.read"
+  | "secret.create"
+  | "secret.update"
+  | "secret.delete"
+  | "audit.read";
+
+export interface AuditEvent {
+  id: string;
+  at: string;
+  action: AuditAction;
+  detail?: string;
+  ip?: string;
+  userAgent?: string;
+}
+
+export interface RekeyVaultInput {
+  salt: string;
+  verifier: string;
+  secrets: Array<{ id: string; encryptedData: string }>;
+  clearRecovery?: boolean;
+}
+
 type VaultRow = {
   id: string;
   name: string;
@@ -131,6 +163,7 @@ export class VaultStore {
     if (!names.has("recovery_created_at")) {
       this.db.exec("ALTER TABLE vaults ADD COLUMN recovery_created_at TEXT");
     }
+    // audit_events created via SCHEMA_SQL CREATE IF NOT EXISTS
   }
 
   close(): void {
@@ -392,5 +425,110 @@ export class VaultStore {
     }
 
     return { vault, imported };
+  }
+
+  /**
+   * Apply master-password rotation: new salt/verifier + re-encrypted secrets.
+   * Optionally clears recovery (must be recreated with new master key).
+   */
+  rekeyVault(input: RekeyVaultInput): VaultRecordWithRecovery {
+    const vault = this.getVault();
+    if (!vault) throw new Error("No vault");
+
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE vaults SET salt = ?, verifier = ?, updated_at = ?,
+          recovery_salt = CASE WHEN ? = 1 THEN NULL ELSE recovery_salt END,
+          recovery_sealed_key = CASE WHEN ? = 1 THEN NULL ELSE recovery_sealed_key END,
+          recovery_created_at = CASE WHEN ? = 1 THEN NULL ELSE recovery_created_at END
+         WHERE id = ?`
+      )
+      .run(
+        input.salt,
+        input.verifier,
+        now,
+        input.clearRecovery ? 1 : 0,
+        input.clearRecovery ? 1 : 0,
+        input.clearRecovery ? 1 : 0,
+        vault.id
+      );
+
+    for (const s of input.secrets) {
+      this.db
+        .prepare(
+          `UPDATE secrets SET encrypted_data = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(s.encryptedData, now, s.id);
+    }
+
+    const updated = this.getVault();
+    if (!updated) throw new Error("Vault missing after rekey");
+    return updated;
+  }
+
+  // ── Audit ───────────────────────────────────────────────
+
+  addAuditEvent(input: {
+    action: AuditAction;
+    detail?: string;
+    ip?: string;
+    userAgent?: string;
+  }): AuditEvent {
+    const id = randomUUID();
+    const at = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO audit_events (id, at, action, detail, ip, user_agent)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        at,
+        input.action,
+        input.detail ?? null,
+        input.ip ?? null,
+        input.userAgent ?? null
+      );
+    return {
+      id,
+      at,
+      action: input.action,
+      detail: input.detail,
+      ip: input.ip,
+      userAgent: input.userAgent,
+    };
+  }
+
+  listAuditEvents(limit = 50): AuditEvent[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, at, action, detail, ip, user_agent
+         FROM audit_events ORDER BY at DESC LIMIT ?`
+      )
+      .all(limit) as unknown as Array<{
+      id: string;
+      at: string;
+      action: string;
+      detail: string | null;
+      ip: string | null;
+      user_agent: string | null;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      at: r.at,
+      action: r.action as AuditAction,
+      detail: r.detail ?? undefined,
+      ip: r.ip ?? undefined,
+      userAgent: r.user_agent ?? undefined,
+    }));
+  }
+
+  countAuditByAction(action: AuditAction): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM audit_events WHERE action = ?`)
+      .get(action) as unknown as { c: number | bigint };
+    return Number(row.c);
   }
 }

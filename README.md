@@ -81,6 +81,16 @@ PUT /vault/recovery  { recovery }
 - Format : `base64(nonce 12B ‖ ciphertext+tag)`  
 - La clé maître ne quitte jamais le client (sauf recovery scellée côté serveur)
 
+## « Est-ce que mon MDP a été cramé ? »
+
+| Scénario | Détectable ? |
+|----------|----------------|
+| Dump SQLite/backup volé + brute-force offline | **Non** (ZK) |
+| Attaquant qui appelle l’API (export, lecture secret, unlock UI) | **Oui** → journal `/audit` |
+| Ancien MDP après rotation (rekey) | Invalide sur le coffre actuel |
+
+Actions : panneau **Sécurité** (audit + rotation MDP), `POST /vault/rekey`, `GET /audit`.
+
 ## Structure
 
 ```
