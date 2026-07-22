@@ -3,6 +3,7 @@ import {
   encryptPayload,
   parseCertificatePem,
   type MasterKey,
+  type SecretPayload,
   type SecretType,
 } from "@ops-vault/core";
 import { useState, type FormEvent } from "react";
@@ -43,7 +44,7 @@ export function AddSecretForm({ masterKey, onCreated, onError }: Props) {
     e.preventDefault();
     setBusy(true);
     try {
-      let payload: Record<string, unknown>;
+      let payload: SecretPayload;
 
       switch (type) {
         case "password":

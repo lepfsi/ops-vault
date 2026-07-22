@@ -1,6 +1,6 @@
-import { decrypt, encrypt } from "./crypto.js";
+import { decrypt, encrypt, wipeKey } from "./crypto.js";
 import { decryptPayload, encryptPayload } from "./secrets.js";
-import { createVaultAuth, wipeKey } from "./vault-auth.js";
+import { createVaultAuth } from "./vault-auth.js";
 import type {
   MasterKey,
   SecretItem,
