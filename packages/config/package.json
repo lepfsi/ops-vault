@@ -1,0 +1,13 @@
+{
+  "name": "@ops-vault/config",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tsconfig/base.json": "./tsconfig/base.json"
+  },
+  "scripts": {
+    "build": "echo \"@ops-vault/config has no build step\"",
+    "typecheck": "echo \"@ops-vault/config has no typecheck step\""
+  }
+}

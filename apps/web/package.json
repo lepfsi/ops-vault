@@ -1,0 +1,12 @@
+{
+  "name": "@ops-vault/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"@ops-vault/web: Vite app — scaffold next\"",
+    "build": "echo \"@ops-vault/web: build — scaffold next\"",
+    "typecheck": "echo \"@ops-vault/web: typecheck — scaffold next\"",
+    "lint": "echo \"@ops-vault/web: lint — scaffold next\""
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@ops-vault/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"@ops-vault/api: Hono server — scaffold next\"",
+    "build": "echo \"@ops-vault/api: build — scaffold next\"",
+    "typecheck": "echo \"@ops-vault/api: typecheck — scaffold next\"",
+    "lint": "echo \"@ops-vault/api: lint — scaffold next\""
+  }
+}
