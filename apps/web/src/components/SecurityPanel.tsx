@@ -4,6 +4,13 @@ import {
   wipeKey,
   type MasterKey,
 } from "@ops-vault/core";
+import {
+  Button,
+  IconDevice,
+  IconFingerprint,
+  IconShield,
+  IconUsers,
+} from "@ops-vault/ui";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../lib/api";
 import type { AuditEvent } from "../lib/api";
@@ -14,38 +21,113 @@ interface Props {
   onError: (msg: string) => void;
 }
 
+type TrustedContact = {
+  name: string;
+  email: string;
+  status: "pending" | "active";
+  addedAt: string;
+};
+
+type DeviceSession = {
+  id: string;
+  label: string;
+  lastSeen: string;
+  current: boolean;
+};
+
+const TC_KEY = "ops-vault.trustedContact";
+const SESS_KEY = "ops-vault.deviceSessions";
+
+function loadTrusted(): TrustedContact | null {
+  try {
+    const raw = localStorage.getItem(TC_KEY);
+    return raw ? (JSON.parse(raw) as TrustedContact) : null;
+  } catch {
+    return null;
+  }
+}
+
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  if (/Windows/i.test(ua)) return "Windows browser";
+  if (/Mac/i.test(ua)) return "macOS browser";
+  if (/Linux/i.test(ua)) return "Linux browser";
+  return "This browser";
+}
+
+function ensureSession(): DeviceSession[] {
+  let list: DeviceSession[] = [];
+  try {
+    const raw = localStorage.getItem(SESS_KEY);
+    if (raw) list = JSON.parse(raw) as DeviceSession[];
+  } catch {
+    list = [];
+  }
+  const id =
+    localStorage.getItem("ops-vault.deviceId") ||
+    crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  localStorage.setItem("ops-vault.deviceId", id);
+  const now = new Date().toISOString();
+  const existing = list.find((s) => s.id === id);
+  if (existing) {
+    existing.lastSeen = now;
+    existing.current = true;
+    existing.label = deviceLabel();
+    list = list.map((s) => ({ ...s, current: s.id === id }));
+  } else {
+    list = [
+      { id, label: deviceLabel(), lastSeen: now, current: true },
+      ...list.map((s) => ({ ...s, current: false })),
+    ].slice(0, 8);
+  }
+  localStorage.setItem(SESS_KEY, JSON.stringify(list));
+  return list;
+}
+
 export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
   const [events, setEvents] = useState<AuditEvent[]>([]);
-  const [note, setNote] = useState("");
   const [newPass, setNewPass] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
-
-  type Summary = {
+  const [sum, setSum] = useState<{
     unlockOk: number;
     unlockFail: number;
     exports: number;
-    imports: number;
     rekeys: number;
-    secretReads: number;
-  };
+  } | null>(null);
 
-  const [sum, setSum] = useState<Summary | null>(null);
+  const [tcName, setTcName] = useState("");
+  const [tcEmail, setTcEmail] = useState("");
+  const [trusted, setTrusted] = useState<TrustedContact | null>(() =>
+    loadTrusted()
+  );
+  const [sessions, setSessions] = useState<DeviceSession[]>([]);
+  const [totpEnabled, setTotpEnabled] = useState(
+    () => localStorage.getItem("ops-vault.2fa.enabled") === "1"
+  );
+  const [passkeyNote, setPasskeyNote] = useState(
+    () => localStorage.getItem("ops-vault.passkey.note") ?? ""
+  );
 
   const load = useCallback(async () => {
     try {
-      const data = await api.getAudit(40);
+      const data = await api.getAudit(30);
       setEvents(data.events);
-      setSum(data.summary);
-      setNote(data.note);
+      setSum({
+        unlockOk: data.summary.unlockOk,
+        unlockFail: data.summary.unlockFail,
+        exports: data.summary.exports,
+        rekeys: data.summary.rekeys,
+      });
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Audit load failed");
+      onError(err instanceof Error ? err.message : "Audit failed");
     }
   }, [onError]);
 
   useEffect(() => {
     void load();
+    setSessions(ensureSession());
   }, [load]);
 
   async function handleRotate(e: FormEvent) {
@@ -61,6 +143,7 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
         secrets
       );
       await api.rekeyVault({
+        vaultId: api.getActiveVaultId() ?? undefined,
         salt: bytesToBase64(auth.salt),
         verifier: auth.verifier,
         secrets: rotated,
@@ -70,9 +153,7 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
       onRekeyed(auth.key);
       setNewPass("");
       setConfirm("");
-      setInfo(
-        "Mot de passe maître changé. Ancien MDP invalide sur ce serveur. Recréez une recovery key."
-      );
+      setInfo("Master password updated. Reconfigure recovery key.");
       await load();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Rotation failed");
@@ -81,159 +162,274 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
     }
   }
 
-  return (
-    <section className="space-y-4 rounded-2xl border border-amber-900/40 bg-slate-900/50 p-5">
-      <div>
-        <h3 className="text-base font-medium text-amber-200/90">
-          Sécurité — peut-on savoir si le MDP a été cramé ?
-        </h3>
-        <div className="mt-2 space-y-2 text-sm text-slate-400">
-          <p>
-            <strong className="text-slate-200">Non, pas en offline.</strong> Si
-            quelqu’un a volé la base (salt + verifier + ciphertexts) et brute-force
-            Argon2id chez lui,{" "}
-            <em className="text-amber-200/80">
-              aucune trace n’apparaît ici
-            </em>
-            . C’est le modèle zero-knowledge (Bitwarden, 1Password offline dump
-            = même limite).
-          </p>
-          <p>
-            <strong className="text-slate-200">Oui, en partie en online.</strong>{" "}
-            Si l’attaquant utilise <em>cette</em> API (export, lecture secret,
-            unlock via l’UI), les événements ci-dessous le montrent.
-          </p>
-          <p className="text-xs text-slate-500">{note}</p>
-        </div>
-      </div>
+  function saveTrusted(e: FormEvent) {
+    e.preventDefault();
+    if (!tcEmail.includes("@")) return;
+    const next: TrustedContact = {
+      name: tcName.trim() || "Trusted contact",
+      email: tcEmail.trim().toLowerCase(),
+      status: "pending",
+      addedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(TC_KEY, JSON.stringify(next));
+    setTrusted(next);
+    setInfo(
+      "Trusted contact saved locally. Full recovery workflow ships with the server-side invite step."
+    );
+  }
 
+  function clearTrusted() {
+    localStorage.removeItem(TC_KEY);
+    setTrusted(null);
+  }
+
+  function revokeSession(id: string) {
+    const next = sessions.filter((s) => s.id !== id);
+    localStorage.setItem(SESS_KEY, JSON.stringify(next));
+    setSessions(next);
+  }
+
+  const field =
+    "w-full rounded-lg border border-[var(--ov-border)] bg-[var(--ov-input)] px-3 py-2 text-sm text-[var(--ov-fg)] outline-none focus:ring-2 ring-[var(--ov-accent-ring)]";
+
+  return (
+    <div className="space-y-5">
       {sum && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          <Stat label="Unlock OK" value={sum.unlockOk} warn={false} />
-          <Stat
-            label="Unlock fail"
-            value={sum.unlockFail}
-            warn={sum.unlockFail > 5}
-          />
-          <Stat label="Exports" value={sum.exports} warn={sum.exports > 0} />
-          <Stat label="Imports" value={sum.imports} warn={false} />
-          <Stat label="Rekeys" value={sum.rekeys} warn={false} />
-          <Stat
-            label="Lectures secret"
-            value={sum.secretReads}
-            warn={false}
-          />
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {(
+            [
+              ["Unlock OK", sum.unlockOk],
+              ["Unlock fail", sum.unlockFail],
+              ["Exports", sum.exports],
+              ["Rekeys", sum.rekeys],
+            ] as const
+          ).map(([label, value]) => (
+            <div
+              key={label}
+              className="rounded-lg border border-[var(--ov-border)] bg-[var(--ov-soft)] px-3 py-2"
+            >
+              <p className="text-[10px] uppercase text-[var(--ov-faint)]">
+                {label}
+              </p>
+              <p className="text-lg font-semibold">{value}</p>
+            </div>
+          ))}
         </div>
       )}
 
-      <div>
+      {/* Trusted contact */}
+      <section className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5">
+        <div className="flex items-center gap-2">
+          <IconUsers className="h-4 w-4 text-[var(--ov-accent)]" />
+          <h3 className="text-sm font-semibold">Trusted contact</h3>
+        </div>
+        <p className="text-xs text-[var(--ov-muted)]">
+          Someone who can help you recover access. They never receive your
+          master password — only a recovery assist flow.
+        </p>
+        {trusted ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--ov-soft)] px-3 py-2 text-sm">
+            <div>
+              <p className="font-medium">{trusted.name}</p>
+              <p className="text-xs text-[var(--ov-muted)]">
+                {trusted.email} · {trusted.status}
+              </p>
+            </div>
+            <Button type="button" variant="ghost" onClick={clearTrusted}>
+              Remove
+            </Button>
+          </div>
+        ) : (
+          <form onSubmit={saveTrusted} className="grid gap-2 sm:grid-cols-2">
+            <input
+              className={field}
+              placeholder="Name"
+              value={tcName}
+              onChange={(e) => setTcName(e.target.value)}
+            />
+            <input
+              className={field}
+              type="email"
+              placeholder="email@example.com"
+              value={tcEmail}
+              onChange={(e) => setTcEmail(e.target.value)}
+              required
+            />
+            <Button type="submit" className="sm:col-span-2 sm:w-fit">
+              Add trusted contact
+            </Button>
+          </form>
+        )}
+      </section>
+
+      {/* 2FA / Passkey */}
+      <section className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5">
+          <div className="flex items-center gap-2">
+            <IconShield className="h-4 w-4 text-[var(--ov-accent)]" />
+            <h3 className="text-sm font-semibold">Two-factor (TOTP)</h3>
+          </div>
+          <p className="text-xs text-[var(--ov-muted)]">
+            Second factor for unlock. TOTP secrets already live in your vault;
+            account-level 2FA gate is staged for the auth service.
+          </p>
+          <label className="flex items-center justify-between text-sm text-[var(--ov-muted)]">
+            Require 2FA at unlock
+            <input
+              type="checkbox"
+              checked={totpEnabled}
+              onChange={(e) => {
+                setTotpEnabled(e.target.checked);
+                localStorage.setItem(
+                  "ops-vault.2fa.enabled",
+                  e.target.checked ? "1" : "0"
+                );
+              }}
+            />
+          </label>
+          <p className="text-[11px] text-[var(--ov-faint)]">
+            Preference stored — enforcement lands with server sessions.
+          </p>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5">
+          <div className="flex items-center gap-2">
+            <IconFingerprint className="h-4 w-4 text-[var(--ov-accent)]" />
+            <h3 className="text-sm font-semibold">Passkey</h3>
+          </div>
+          <p className="text-xs text-[var(--ov-muted)]">
+            WebAuthn / platform authenticator for passwordless unlock.
+          </p>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled
+            title="Requires WebAuthn registration endpoint"
+          >
+            Register passkey
+          </Button>
+          <input
+            className={field}
+            placeholder="Note (device name)"
+            value={passkeyNote}
+            onChange={(e) => {
+              setPasskeyNote(e.target.value);
+              localStorage.setItem("ops-vault.passkey.note", e.target.value);
+            }}
+          />
+        </div>
+      </section>
+
+      {/* Sessions / devices */}
+      <section className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5">
+        <div className="flex items-center gap-2">
+          <IconDevice className="h-4 w-4 text-[var(--ov-accent)]" />
+          <h3 className="text-sm font-semibold">Active sessions & devices</h3>
+        </div>
+        <p className="text-xs text-[var(--ov-muted)]">
+          Local device registry for now. Cross-device revoke ships with the
+          session service.
+        </p>
+        <ul className="divide-y divide-[var(--ov-border)] rounded-lg border border-[var(--ov-border)]">
+          {sessions.map((s) => (
+            <li
+              key={s.id}
+              className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
+            >
+              <div>
+                <p className="font-medium">
+                  {s.label}
+                  {s.current && (
+                    <span className="ml-2 text-[10px] uppercase text-[var(--ov-accent)]">
+                      this device
+                    </span>
+                  )}
+                </p>
+                <p className="text-[11px] text-[var(--ov-faint)]">
+                  Last seen {s.lastSeen.slice(0, 19).replace("T", " ")}
+                </p>
+              </div>
+              {!s.current && (
+                <button
+                  type="button"
+                  className="text-xs text-red-500"
+                  onClick={() => revokeSession(s.id)}
+                >
+                  Revoke
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <form
+        onSubmit={(e) => void handleRotate(e)}
+        className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5"
+      >
+        <h3 className="text-sm font-semibold">Change master password</h3>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <input
+            type="password"
+            value={newPass}
+            onChange={(e) => setNewPass(e.target.value)}
+            placeholder="New password"
+            minLength={8}
+            required
+            className={field}
+          />
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="Confirm"
+            minLength={8}
+            required
+            className={field}
+          />
+        </div>
+        <Button
+          type="submit"
+          disabled={busy || newPass !== confirm || newPass.length < 8}
+        >
+          {busy ? "…" : "Rotate password"}
+        </Button>
+      </form>
+
+      <div className="rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5">
         <div className="mb-2 flex items-center justify-between">
-          <h4 className="text-sm font-medium text-slate-300">Journal d’audit</h4>
+          <h3 className="text-sm font-semibold">Audit log</h3>
           <button
             type="button"
             onClick={() => void load()}
-            className="text-xs text-cyan-400 hover:underline"
+            className="text-xs text-[var(--ov-accent)]"
           >
-            Actualiser
+            Refresh
           </button>
         </div>
         {events.length === 0 ? (
-          <p className="text-xs text-slate-500">Aucun événement encore.</p>
+          <p className="text-xs text-[var(--ov-faint)]">No events</p>
         ) : (
-          <ul className="max-h-48 space-y-1 overflow-y-auto font-mono text-[11px] text-slate-400">
+          <ul className="max-h-48 space-y-1 overflow-y-auto font-mono text-[11px] text-[var(--ov-muted)]">
             {events.map((ev) => (
               <li
                 key={ev.id}
-                className="flex flex-wrap gap-x-2 border-b border-slate-800/80 py-1"
+                className="flex flex-wrap gap-x-2 border-b border-[var(--ov-border)] py-1"
               >
-                <span className="text-slate-600">{ev.at.slice(0, 19)}</span>
-                <span className="text-cyan-400/90">{ev.action}</span>
-                {ev.detail && (
-                  <span className="truncate text-slate-500">{ev.detail}</span>
-                )}
-                {ev.ip && <span className="text-slate-600">{ev.ip}</span>}
+                <span className="text-[var(--ov-faint)]">
+                  {ev.at.slice(0, 19)}
+                </span>
+                <span>{ev.action}</span>
               </li>
             ))}
           </ul>
         )}
       </div>
 
-      <form
-        onSubmit={(e) => void handleRotate(e)}
-        className="space-y-3 border-t border-slate-800 pt-4"
-      >
-        <h4 className="text-sm font-medium text-slate-300">
-          Changer le mot de passe maître (rekey)
-        </h4>
-        <p className="text-xs text-slate-500">
-          Rechiffre tous les secrets sous une nouvelle clé. Un dump volé avec
-          l’ancien MDP ne déchiffre plus les données actuelles.
-        </p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <input
-            type="password"
-            value={newPass}
-            onChange={(e) => setNewPass(e.target.value)}
-            placeholder="Nouveau MDP (≥8)"
-            minLength={8}
-            required
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-          />
-          <input
-            type="password"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            placeholder="Confirmation"
-            minLength={8}
-            required
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={busy || newPass !== confirm || newPass.length < 8}
-          className="rounded-lg border border-amber-700/60 bg-amber-950/40 px-4 py-2 text-sm text-amber-100 hover:bg-amber-900/40 disabled:opacity-50"
-        >
-          {busy ? "Rechiffrement…" : "Rotation du MDP maître"}
-        </button>
-      </form>
-
       {info && (
-        <p className="rounded-lg border border-emerald-900/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-300">
-          {info}
-        </p>
+        <p className="text-sm text-emerald-600 dark:text-emerald-400">{info}</p>
       )}
-    </section>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  warn,
-}: {
-  label: string;
-  value: number;
-  warn: boolean;
-}) {
-  return (
-    <div
-      className={`rounded-lg border px-3 py-2 ${
-        warn
-          ? "border-amber-800/50 bg-amber-950/20"
-          : "border-slate-800 bg-slate-950/50"
-      }`}
-    >
-      <p className="text-[10px] uppercase tracking-wide text-slate-500">
-        {label}
-      </p>
-      <p
-        className={`text-lg font-semibold ${
-          warn ? "text-amber-300" : "text-slate-100"
-        }`}
-      >
-        {value}
-      </p>
     </div>
   );
 }
+

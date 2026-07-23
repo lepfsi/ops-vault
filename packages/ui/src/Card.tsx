@@ -9,7 +9,7 @@ export function Card({ className, children, ...rest }: CardProps) {
   return (
     <div
       className={cn(
-        "rounded-2xl border border-slate-800 bg-slate-900/50 p-5 shadow-xl shadow-black/20",
+        "rounded-2xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5 text-[var(--ov-fg)] shadow-xl shadow-black/10",
         className
       )}
       {...rest}
@@ -27,7 +27,14 @@ export function CardTitle({
   children: ReactNode;
 }) {
   return (
-    <h2 className={cn("mb-1 text-lg font-medium", className)}>{children}</h2>
+    <h2
+      className={cn(
+        "mb-1 text-lg font-medium text-[var(--ov-fg)]",
+        className
+      )}
+    >
+      {children}
+    </h2>
   );
 }
 
@@ -39,6 +46,8 @@ export function CardDescription({
   children: ReactNode;
 }) {
   return (
-    <p className={cn("mb-4 text-sm text-slate-400", className)}>{children}</p>
+    <p className={cn("mb-4 text-sm text-[var(--ov-muted)]", className)}>
+      {children}
+    </p>
   );
 }

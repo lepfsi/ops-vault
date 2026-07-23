@@ -1,6 +1,7 @@
 export type {
   ApiKeyPayload,
   CertificatePayload,
+  FolderItem,
   MasterKey,
   NotePayload,
   OtpPayload,
@@ -11,6 +12,7 @@ export type {
   SecretPayload,
   SecretType,
   SecretVaultId,
+  SecretVisibility,
   SnippetPayload,
   SshKeyPayload,
   VaultAuthMaterial,
@@ -34,6 +36,7 @@ export {
 } from "./crypto.js";
 
 export {
+  assertBase64RoundTrip,
   base64ToBytes,
   bytesToBase64,
   bytesToUtf8,
@@ -79,6 +82,9 @@ export {
   parseCertificatePem,
 } from "./certificate.js";
 
+export type { X509Parsed } from "./x509.js";
+export { parseX509Der } from "./x509.js";
+
 export { createRecoveryBundle, unlockWithRecovery } from "./recovery.js";
 
 export type { PasswordRotationResult, RotatedSecret } from "./rotate.js";
@@ -88,3 +94,60 @@ export {
   rotateMasterPassword,
   verifyVaultCanary,
 } from "./rotate.js";
+
+export type {
+  PassphraseOptions,
+  PasswordGenOptions,
+  UsernameOptions,
+  UsernameStyle,
+} from "./password-gen.js";
+export {
+  estimatePassphraseEntropy,
+  estimatePasswordEntropy,
+  generatePassphrase,
+  generatePassword,
+  generateUsername,
+} from "./password-gen.js";
+
+export type { ExternalSharePackage, ShareLimits } from "./share.js";
+export {
+  SHARE_FORMAT,
+  SHARE_TTL_PRESETS,
+  SHARE_VERSION,
+  SHARE_VIEW_PRESETS,
+  createExternalShare,
+  isExternalSharePackage,
+  openExternalShare,
+  reencryptPayloadForRecipient,
+} from "./share.js";
+
+export type {
+  PasswordPolicy,
+  PolicyResult,
+  PolicyViolation,
+} from "./password-policy.js";
+export {
+  DEFAULT_PASSWORD_POLICY,
+  evaluatePasswordPolicy,
+  mergePolicy,
+} from "./password-policy.js";
+
+export { checkPasswordBreached } from "./breach.js";
+
+export {
+  isNotePinProtected,
+  openNoteWithPin,
+  sealNoteWithPin,
+} from "./note-protect.js";
+
+export {
+  clearOrgKeyLocal,
+  generateOrgKey,
+  loadOrgKeyLocal,
+  openOrgKeyFromToken,
+  openOrgKeyWithMaster,
+  resolveOrgKey,
+  sealOrgKeyForToken,
+  sealOrgKeyWithMaster,
+  storeOrgKeyLocal,
+} from "./org-key.js";

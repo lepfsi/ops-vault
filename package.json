@@ -2,7 +2,9 @@
   "name": "ops-vault",
   "private": true,
   "scripts": {
-    "dev": "turbo dev",
+    "dev": "turbo dev --filter=@ops-vault/api --filter=@ops-vault/web",
+    "dev:api": "pnpm --filter @ops-vault/api dev",
+    "dev:web": "pnpm --filter @ops-vault/web dev",
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck"

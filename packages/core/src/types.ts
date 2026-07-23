@@ -7,16 +7,41 @@ export type SecretType =
   | "otp"
   | "snippet";
 
+/** private = only creator · org = visible/decryptable by org members (org key). */
+export type SecretVisibility = "private" | "org";
+
 export interface SecretItem {
   id: string;
   vaultId: string;
   type: SecretType;
   title: string;
+  /**
+   * Login / website URL (metadata, not secret) — open in browser like Bitwarden.
+   * Also stored inside encrypted password payload when applicable.
+   */
+  url?: string | null;
+  /** Folder id within the vault (null = root). */
+  folderId?: string | null;
+  /** Org workspace (null = personal vault ecosystem). */
+  workspaceId?: string | null;
+  /** Who created the item (for private-in-org filtering). */
+  ownerVaultId?: string | null;
+  visibility?: SecretVisibility;
+  /** Optional org group scope (null = whole org when visibility=org). */
+  groupId?: string | null;
   /** Always ciphertext (base64); never store plaintext here. */
   encryptedData: string;
   createdAt: string;
   updatedAt: string;
   tags?: string[];
+}
+
+export interface FolderItem {
+  id: string;
+  vaultId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Metadata only — safe to list without ciphertext. */
@@ -36,6 +61,10 @@ export type SecretVaultId = SecretItem["vaultId"];
 export interface VaultRecord {
   id: string;
   name: string;
+  /** Account email (unique login identifier). */
+  email?: string | null;
+  /** Recovery contact email (not used as password factor). */
+  recoveryEmail?: string | null;
   /** Argon2id salt (base64). */
   salt: string;
   /** AES-GCM ciphertext of a fixed verifier string. */
@@ -70,7 +99,15 @@ export interface OtpPayload {
 }
 
 export interface NotePayload {
+  /**
+   * Plain body when not PIN-protected.
+   * Empty when `pinProtected` — content lives in `pinSealed`.
+   */
   body: string;
+  /** Secondary lock: body sealed under a note PIN (in addition to vault crypto). */
+  pinProtected?: boolean;
+  pinSalt?: string;
+  pinSealed?: string;
 }
 
 export interface SshKeyPayload {
@@ -121,6 +158,8 @@ export interface VaultBackupSecret {
   type: SecretType;
   title: string;
   encryptedData: string;
+  url?: string | null;
+  folderId?: string | null;
   tags?: string[];
 }
 

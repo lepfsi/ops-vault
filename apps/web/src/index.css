@@ -1,23 +1,159 @@
 @import "tailwindcss";
 
+@source "../../../packages/ui/src";
+@source "../src";
+
+/*
+ * Theme tokens — dark is default.
+ * Never mix light tokens into :root + dark together.
+ */
 :root {
   color-scheme: dark;
+  --ov-bg: #070a0e;
+  --ov-sidebar: #0b1017;
+  --ov-panel: #0f141c;
+  --ov-soft: #151b25;
+  --ov-input: #0c1118;
+  --ov-border: #1e293b;
+  --ov-fg: #e8eef5;
+  --ov-muted: #94a3b8;
+  --ov-faint: #64748b;
+  --ov-hover: rgba(30, 41, 59, 0.75);
+  --ov-accent: #0891b2;
+  --ov-accent-hover: #06b6d4;
+  --ov-accent-soft: rgba(8, 145, 178, 0.14);
+  --ov-accent-ring: rgba(8, 145, 178, 0.35);
+  --ov-secondary: #0e7490;
+  --ov-secondary-fg: #ecfeff;
+  --ov-secondary-soft: rgba(14, 116, 144, 0.2);
+  --ov-header: rgba(11, 16, 23, 0.92);
   font-family:
     "Segoe UI",
     system-ui,
     -apple-system,
+    BlinkMacSystemFont,
+    "Helvetica Neue",
     sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  background: #0b0f14;
-  color: #e8eef5;
+  background: var(--ov-bg);
+  color: var(--ov-fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+html.light,
+html[data-theme="light"] {
+  color-scheme: light;
+  --ov-bg: #f0f4f8;
+  --ov-sidebar: #ffffff;
+  --ov-panel: #ffffff;
+  --ov-soft: #e8eef4;
+  --ov-input: #ffffff;
+  --ov-border: #d0d9e3;
+  --ov-fg: #0f172a;
+  --ov-muted: #475569;
+  --ov-faint: #94a3b8;
+  --ov-hover: rgba(226, 232, 240, 0.9);
+  --ov-accent: #0e7490;
+  --ov-accent-hover: #0891b2;
+  --ov-accent-soft: rgba(14, 116, 144, 0.12);
+  --ov-accent-ring: rgba(14, 116, 144, 0.3);
+  --ov-secondary: #155e75;
+  --ov-secondary-fg: #ffffff;
+  --ov-secondary-soft: rgba(21, 94, 117, 0.12);
+  --ov-header: rgba(255, 255, 255, 0.94);
+}
+
+html.dark,
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --ov-bg: #070a0e;
+  --ov-sidebar: #0b1017;
+  --ov-panel: #0f141c;
+  --ov-soft: #151b25;
+  --ov-input: #0c1118;
+  --ov-border: #1e293b;
+  --ov-fg: #e8eef5;
+  --ov-muted: #94a3b8;
+  --ov-faint: #64748b;
+  --ov-hover: rgba(30, 41, 59, 0.75);
+  --ov-accent: #0891b2;
+  --ov-accent-hover: #06b6d4;
+  --ov-accent-soft: rgba(8, 145, 178, 0.14);
+  --ov-accent-ring: rgba(8, 145, 178, 0.35);
+  --ov-secondary: #0e7490;
+  --ov-secondary-fg: #ecfeff;
+  --ov-secondary-soft: rgba(14, 116, 144, 0.2);
+  --ov-header: rgba(11, 16, 23, 0.92);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  background: var(--ov-bg);
+  color: var(--ov-fg);
 }
 
 #root {
   min-height: 100vh;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ov-border) transparent;
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* Force native controls to follow theme (autofill, date, etc.) */
+input,
+textarea,
+select {
+  background-color: var(--ov-input);
+  color: var(--ov-fg);
+  border-color: var(--ov-border);
+  color-scheme: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ov-faint);
+}
+
+/* Kill browser white autofill flash in dark mode */
+html.dark input:-webkit-autofill,
+html.dark textarea:-webkit-autofill,
+html[data-theme="dark"] input:-webkit-autofill,
+html[data-theme="dark"] textarea:-webkit-autofill {
+  -webkit-text-fill-color: var(--ov-fg);
+  box-shadow: 0 0 0 1000px var(--ov-input) inset;
+  transition: background-color 99999s ease-out;
+}
+
+/* File picker button */
+input[type="file"]::file-selector-button {
+  margin-right: 0.75rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: var(--ov-secondary-soft);
+  color: var(--ov-fg);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* Utility for secondary brand surfaces */
+.ov-accent-bar {
+  background: linear-gradient(
+    90deg,
+    var(--ov-accent),
+    var(--ov-secondary)
+  );
 }

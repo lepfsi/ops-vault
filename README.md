@@ -28,12 +28,25 @@ pnpm install
 pnpm --filter @ops-vault/core build
 pnpm --filter @ops-vault/db build
 pnpm --filter @ops-vault/ui build
+
+# Lance API (:8790) + Web (:5180) ensemble
+# (ports par défaut hors conflit OpsGate 5173/8787 — override via .env)
 pnpm dev
 ```
 
-- **Web** : http://localhost:5173  
-- **API** : http://localhost:8787  
-- **SQLite** : `./data/ops-vault.db` (`OPS_VAULT_DATA`)
+| Service | URL | Script seul |
+|---------|-----|-------------|
+| **Web** | http://localhost:5180 | `pnpm dev:web` (`OPS_VAULT_WEB_PORT`) |
+| **API** | http://localhost:8790 | `pnpm dev:api` (`OPS_VAULT_API_PORT`) |
+| **SQLite** | `apps/api/data/ops-vault.db` | `OPS_VAULT_DATA` |
+
+Si le navigateur affiche *API injoignable* / Vite `proxy error: /vaults` : seul le front tourne — démarre aussi `pnpm dev:api`.
+
+Après un pull qui change le schéma SQLite, rebuild le package db avant `pnpm dev` :
+
+```bash
+pnpm --filter @ops-vault/db build
+```
 
 ## Auth vault
 
@@ -91,12 +104,35 @@ PUT /vault/recovery  { recovery }
 
 Actions : panneau **Sécurité** (audit + rotation MDP), `POST /vault/rekey`, `GET /audit`.
 
+## UI (professional shell)
+
+Inspiré Bitwarden / 1Password (icônes SVG, logo OpsVault v1) :
+
+- **Lock screen** + wordmark officiel
+- **Sidebar** : types · dossiers (drag & drop) · tags · coffres
+- **Top bar** : recherche (`/`) · Ajouter (`N`)
+- **Drawer** : détail, **édition**, TOTP hero, partage externe
+- **Mots de passe** : URL site · générateur · favicon/monogramme
+- **Réglages** : Backup · Sécurité (rekey/reset) · Confidentialité · Espaces · À propos
+- **Mode clair / sombre** · auto-lock
+
+## Multi-vault
+
+- Plusieurs coffres par instance (`GET/POST /vaults`)
+- Header `X-Vault-Id` pour cibler le coffre actif
+- UI : sélecteur + « Nouveau coffre »
+- Recovery unlock sur l’écran verrouillé (si configuré)
+
+## X.509
+
+- `parseCertificatePem` + `parseX509Der` : subject, issuer, serial, notBefore/notAfter, SHA-256
+
 ## Structure
 
 ```
-apps/web          UI
-apps/api          Hono + SQLite
-packages/core     crypto, OTP, backup, cert, recovery
+apps/web          UI (AuthPanel → @ops-vault/ui)
+apps/api          Hono + SQLite multi-vault
+packages/core     crypto, OTP, backup, X.509, recovery
 packages/db       VaultStore
 packages/ui       Button, Card, Badge, Input
 ```

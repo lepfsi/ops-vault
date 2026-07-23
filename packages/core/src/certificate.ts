@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToBase64 } from "./encoding.js";
+import { base64ToBytes } from "./encoding.js";
 import type { CertificatePayload } from "./types.js";
+import { parseX509Der } from "./x509.js";
 
 const PEM_RE =
   /-----BEGIN ([A-Z0-9 ]+)-----([A-Za-z0-9+/=\s]+)-----END \1-----/g;
@@ -20,7 +21,7 @@ export function extractPemBlocks(text: string): PemBlock[] {
   while ((m = re.exec(normalized)) !== null) {
     const label = m[1]!.trim();
     const b64 = m[2]!.replace(/\s+/g, "");
-    const der = base64ToUint8(b64);
+    const der = base64ToBytes(b64);
     blocks.push({
       label,
       der,
@@ -28,36 +29,6 @@ export function extractPemBlocks(text: string): PemBlock[] {
     });
   }
   return blocks;
-}
-
-function base64ToUint8(b64: string): Uint8Array {
-  const cleaned = b64.replace(/[^A-Za-z0-9+/]/g, "");
-  const pad = cleaned.length % 4 === 0 ? 0 : 4 - (cleaned.length % 4);
-  const padded = cleaned + "=".repeat(pad);
-  // Prefer atob when available
-  if (typeof atob === "function") {
-    const bin = atob(padded);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  // Pure decoder
-  const alphabet =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const outLen = Math.floor((padded.replace(/=/g, "").length * 3) / 4);
-  const out = new Uint8Array(outLen);
-  let o = 0;
-  for (let i = 0; i < padded.length; i += 4) {
-    const n =
-      (alphabet.indexOf(padded[i]!) << 18) |
-      (alphabet.indexOf(padded[i + 1]!) << 12) |
-      ((padded[i + 2] === "=" ? 0 : alphabet.indexOf(padded[i + 2]!)) << 6) |
-      (padded[i + 3] === "=" ? 0 : alphabet.indexOf(padded[i + 3]!));
-    if (o < outLen) out[o++] = (n >> 16) & 255;
-    if (o < outLen && padded[i + 2] !== "=") out[o++] = (n >> 8) & 255;
-    if (o < outLen && padded[i + 3] !== "=") out[o++] = n & 255;
-  }
-  return out;
 }
 
 function wrap64(s: string): string {
@@ -69,19 +40,21 @@ function toHex(bytes: Uint8Array): string {
 }
 
 /**
- * Parse PEM certificate material into a payload.
- * Full ASN.1 X.509 field extraction is deferred; we validate PEM,
- * fingerprint the DER, and store the PEM for later crypto use.
+ * Parse PEM certificate material into a payload with X.509 fields when possible.
  */
 export function parseCertificatePem(pemText: string): CertificatePayload {
   const blocks = extractPemBlocks(pemText);
   if (blocks.length === 0) {
-    throw new Error("No PEM blocks found (expected -----BEGIN CERTIFICATE-----)");
+    throw new Error(
+      "No PEM blocks found (expected -----BEGIN CERTIFICATE-----)"
+    );
   }
 
   const cert =
-    blocks.find((b) => b.label.includes("CERTIFICATE") && !b.label.includes("REQUEST")) ??
-    blocks[0]!;
+    blocks.find(
+      (b) =>
+        b.label.includes("CERTIFICATE") && !b.label.includes("REQUEST")
+    ) ?? blocks[0]!;
   const key = blocks.find(
     (b) =>
       b.label.includes("PRIVATE KEY") ||
@@ -91,19 +64,37 @@ export function parseCertificatePem(pemText: string): CertificatePayload {
 
   const fingerprintSha256 = toHex(sha256(cert.der));
 
+  let x509: Partial<CertificatePayload> = {};
+  try {
+    const parsed = parseX509Der(cert.der);
+    x509 = {
+      subject: parsed.subject,
+      issuer: parsed.issuer,
+      notBefore: parsed.notBefore,
+      notAfter: parsed.notAfter,
+      serialNumber: parsed.serialNumber,
+    };
+  } catch {
+    // PEM valid but ASN.1 incomplete — keep fingerprint only
+  }
+
   return {
     pem: cert.pem,
     privateKeyPem: key?.pem,
     fingerprintSha256,
     derLength: cert.der.length,
     label: cert.label,
-    notes: key
-      ? `PEM certificate + private key (${key.label})`
-      : `PEM ${cert.label}`,
+    ...x509,
+    notes: [
+      key ? `private key: ${key.label}` : null,
+      x509.subject ? `subject: ${x509.subject}` : null,
+      x509.notAfter ? `expires: ${x509.notAfter}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
   };
 }
 
-/** Quick structural check for certificate secrets. */
 export function isLikelyCertificatePem(text: string): boolean {
   return (
     text.includes("BEGIN CERTIFICATE") ||
@@ -113,7 +104,7 @@ export function isLikelyCertificatePem(text: string): boolean {
 
 export function certificateSummary(payload: CertificatePayload): string {
   const parts = [
-    payload.label ?? "CERTIFICATE",
+    payload.subject || payload.label || "CERTIFICATE",
     payload.fingerprintSha256
       ? `sha256:${payload.fingerprintSha256.slice(0, 16)}…`
       : null,
@@ -121,6 +112,3 @@ export function certificateSummary(payload: CertificatePayload): string {
   ].filter(Boolean);
   return parts.join(" · ");
 }
-
-// re-export helper used by payload builders
-export { bytesToBase64 };

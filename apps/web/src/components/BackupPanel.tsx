@@ -8,6 +8,7 @@ import {
   type MasterKey,
   type VaultRecordWithRecovery,
 } from "@ops-vault/core";
+import { Button } from "@ops-vault/ui";
 import { useRef, useState, type ChangeEvent } from "react";
 import * as api from "../lib/api";
 
@@ -34,6 +35,9 @@ export function BackupPanel({
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
 
+  const field =
+    "w-full rounded-lg border border-[var(--ov-border)] bg-[var(--ov-input)] px-3 py-2 text-sm text-[var(--ov-fg)] outline-none focus:ring-2 focus:ring-[var(--ov-accent-ring)]";
+
   async function handleExport() {
     setBusy(true);
     setInfo(null);
@@ -46,13 +50,11 @@ export function BackupPanel({
         const sealed = await sealBackup(backup, exportPass);
         blob = new Blob([backupToJson(sealed)], { type: "application/json" });
         filename = `ops-vault-sealed-${dateStamp()}.json`;
-        setInfo("Export scellé téléchargé (mot de passe d’export requis à l’import).");
+        setInfo("Sealed export downloaded");
       } else {
         blob = new Blob([backupToJson(backup)], { type: "application/json" });
         filename = `ops-vault-backup-${dateStamp()}.json`;
-        setInfo(
-          "Export téléchargé (ciphertexts only — même MDP maître pour ouvrir)."
-        );
+        setInfo("Export downloaded");
       }
 
       downloadBlob(blob, filename);
@@ -75,9 +77,7 @@ export function BackupPanel({
         importPass.length > 0 ? importPass : undefined
       );
       const result = await api.importVault({ backup, force });
-      setInfo(
-        `Import OK — ${result.imported} secret(s). Rechargez et déverrouillez avec le MDP d’origine du backup.`
-      );
+      setInfo(`Imported ${result.imported} secret(s)`);
       onImported();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Import failed");
@@ -94,7 +94,7 @@ export function BackupPanel({
       const bundle = await createRecoveryBundle(masterKey, recoveryPass);
       await api.setRecovery({ recovery: bundle });
       setRecoveryPass("");
-      setInfo("Clé de recovery enregistrée (salt + master key scellée).");
+      setInfo("Recovery key saved");
       onRecoveryUpdated();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Recovery setup failed");
@@ -105,14 +105,14 @@ export function BackupPanel({
 
   async function handleTestRecovery() {
     if (!vault.recovery) {
-      onError("Aucune recovery configurée");
+      onError("No recovery configured");
       return;
     }
     setBusy(true);
     try {
       const key = await unlockWithRecovery(vault.recovery, recoveryPass);
       wipeKey(key);
-      setInfo("Recovery password valide — clé maître restaurable.");
+      setInfo("Recovery passphrase valid");
     } catch (err) {
       onError(err instanceof Error ? err.message : "Recovery failed");
     } finally {
@@ -121,79 +121,80 @@ export function BackupPanel({
   }
 
   return (
-    <section className="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+    <section className="space-y-5">
       <div>
-        <h3 className="text-base font-medium">Backup & recovery</h3>
-        <p className="mt-1 text-sm text-slate-400">
-          Export portable zero-knowledge. Option seal = couche Argon2id + AES-GCM
-          avec un mot de passe d’export séparé.
+        <h3 className="text-base font-semibold text-[var(--ov-fg)]">Backup</h3>
+        <p className="mt-1 text-sm text-[var(--ov-muted)]">
+          Portable zero-knowledge export. Optional seal password.
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-4 sm:grid-cols-2">
         <label className="block text-sm">
-          <span className="mb-1 block text-slate-400">
-            MDP export (optionnel, ≥8)
+          <span className="mb-1 block text-[var(--ov-muted)]">
+            Export password (optional)
           </span>
           <input
             type="password"
             value={exportPass}
             onChange={(e) => setExportPass(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-            placeholder="vide = backup non scellé"
+            className={field}
+            placeholder="Empty = unsealed"
           />
         </label>
         <div className="flex items-end">
-          <button
+          <Button
             type="button"
             disabled={busy}
             onClick={() => void handleExport()}
-            className="w-full rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500 disabled:opacity-60"
+            className="w-full"
           >
-            Exporter le coffre
-          </button>
+            Export vault
+          </Button>
         </div>
       </div>
 
-      <div className="border-t border-slate-800 pt-4">
+      <div className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm">
-            <span className="mb-1 block text-slate-400">
-              MDP import (si scellé)
+            <span className="mb-1 block text-[var(--ov-muted)]">
+              Import password (if sealed)
             </span>
             <input
               type="password"
               value={importPass}
               onChange={(e) => setImportPass(e.target.value)}
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              className={field}
             />
           </label>
-          <label className="flex items-end gap-2 pb-2 text-sm text-slate-300">
+          <label className="flex items-end gap-2 pb-2 text-sm text-[var(--ov-muted)]">
             <input
               type="checkbox"
               checked={force}
               onChange={(e) => setForce(e.target.checked)}
             />
-            Remplacer le coffre existant (force)
+            Replace existing vault
           </label>
         </div>
         <input
           ref={fileRef}
           type="file"
           accept="application/json,.json"
-          className="mt-3 block w-full text-sm text-slate-400 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-900"
+          className="block w-full text-sm text-[var(--ov-muted)]"
           onChange={(e) => void handleImportFile(e)}
           disabled={busy}
         />
       </div>
 
-      <div className="border-t border-slate-800 pt-4">
-        <p className="mb-2 text-sm text-slate-400">
-          Recovery key (break-glass) —{" "}
+      <div className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-4">
+        <p className="text-sm text-[var(--ov-muted)]">
+          Recovery key —{" "}
           {vault.recovery ? (
-            <span className="text-emerald-400">configurée</span>
+            <span className="text-emerald-600 dark:text-emerald-400">
+              configured
+            </span>
           ) : (
-            <span className="text-amber-400">absente</span>
+            <span className="text-amber-600 dark:text-amber-400">missing</span>
           )}
         </p>
         <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
@@ -201,38 +202,36 @@ export function BackupPanel({
             type="password"
             value={recoveryPass}
             onChange={(e) => setRecoveryPass(e.target.value)}
-            placeholder="Recovery password (≥12)"
-            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            placeholder="Recovery passphrase (≥12)"
+            className={field}
           />
-          <button
+          <Button
             type="button"
+            variant="secondary"
             disabled={busy || recoveryPass.length < 12}
             onClick={() => void handleCreateRecovery()}
-            className="rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-50"
           >
-            Enregistrer
-          </button>
-          <button
+            Save
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
             disabled={busy || !vault.recovery || recoveryPass.length < 12}
             onClick={() => void handleTestRecovery()}
-            className="rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-50"
           >
-            Tester
-          </button>
+            Test
+          </Button>
         </div>
       </div>
 
       {info && (
-        <p className="rounded-lg border border-emerald-900/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-300">
-          {info}
-        </p>
+        <p className="text-sm text-emerald-600 dark:text-emerald-400">{info}</p>
       )}
     </section>
   );
 }
 
-function dateStamp(): string {
+function dateStamp() {
   return new Date().toISOString().slice(0, 10);
 }
 

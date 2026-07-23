@@ -32,11 +32,7 @@ function clientMeta(c: Context) {
   };
 }
 
-function audit(
-  c: Context,
-  action: AuditAction,
-  detail?: string
-): void {
+function audit(c: Context, action: AuditAction, detail?: string): void {
   try {
     const meta = clientMeta(c);
     store.addAuditEvent({
@@ -50,38 +46,194 @@ function audit(
   }
 }
 
+/** Active vault: X-Vault-Id header, ?vaultId=, or first vault. */
+function vaultIdFrom(c: Context): string | undefined {
+  return (
+    c.req.header("x-vault-id") ||
+    c.req.query("vaultId") ||
+    undefined
+  );
+}
+
+const webPort = Number(process.env.OPS_VAULT_WEB_PORT ?? 5180);
+const corsOrigins = [
+  `http://localhost:${webPort}`,
+  `http://127.0.0.1:${webPort}`,
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:5180",
+  "http://127.0.0.1:5180",
+  ...(process.env.OPS_VAULT_CORS_ORIGINS?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean) ?? []),
+];
+
 app.use("*", logger());
 app.use(
   "*",
   cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    origin: corsOrigins,
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "X-Vault-Id"],
   })
 );
 
 app.get("/health", (c) => {
-  const vault = store.getVault();
   return c.json({
     ok: true,
     service: "ops-vault-api",
-    vault: vault
-      ? {
-          id: vault.id,
-          name: vault.name,
-          hasRecovery: Boolean(vault.recovery),
-        }
-      : null,
-    secrets: vault ? store.countSecrets(vault.id) : 0,
     unlockOk: store.countAuditByAction("vault.unlock.ok"),
     unlockFail: store.countAuditByAction("vault.unlock.fail"),
     exports: store.countAuditByAction("vault.export"),
   });
 });
 
-// ── Vault ─────────────────────────────────────────────────
+// ── Auth (account by email — unlock remains client-side ZK) ─
+
+app.post("/auth/register", async (c) => {
+  const body = await c.req.json<{
+    email: string;
+    recoveryEmail?: string;
+    name?: string;
+    salt: string;
+    verifier: string;
+    recovery?: RecoveryBundle | null;
+  }>();
+
+  const email = body?.email?.trim().toLowerCase();
+  if (!email || !body?.salt || !body?.verifier) {
+    return c.json({ error: "email, salt and verifier are required" }, 400);
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return c.json({ error: "Invalid email" }, 400);
+  }
+
+  try {
+    const vault = store.createVault({
+      name: body.name?.trim() || "OpsVault",
+      email,
+      recoveryEmail: body.recoveryEmail?.trim() || email,
+      salt: body.salt,
+      verifier: body.verifier,
+      recovery: body.recovery ?? null,
+    });
+    audit(c, "vault.create", `${vault.id}:${email}`);
+    return c.json({ vault }, 201);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Register failed";
+    const status = msg.includes("already exists") ? 409 : 400;
+    return c.json({ error: msg }, status);
+  }
+});
+
+/** Lookup account material for client-side unlock (no password verified server-side). */
+app.post("/auth/login", async (c) => {
+  const body = await c.req.json<{ email: string }>();
+  const email = body?.email?.trim().toLowerCase();
+  if (!email) return c.json({ error: "email is required" }, 400);
+
+  const vault = store.getVaultByEmail(email);
+  if (!vault) {
+    audit(c, "vault.unlock.fail", `unknown:${email}`);
+    return c.json({ error: "Unknown account" }, 404);
+  }
+  return c.json({ vault });
+});
+
+app.patch("/vault/account", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{
+    email?: string | null;
+    recoveryEmail?: string | null;
+    name?: string;
+  }>();
+  try {
+    const updated = store.updateAccount(vault.id, body);
+    if (!updated) return c.json({ error: "Not found" }, 404);
+    return c.json({ vault: updated });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Update failed" },
+      400
+    );
+  }
+});
+
+// ── Multi-vault (scoped: only active vault, never global dump) ─
+
+app.get("/vaults", (c) => {
+  const vid = vaultIdFrom(c);
+  if (!vid) return c.json({ vaults: [] });
+  const v = store.getVaultById(vid);
+  if (!v) return c.json({ vaults: [] });
+  return c.json({
+    vaults: [
+      {
+        id: v.id,
+        name: v.name,
+        email: v.email,
+        hasRecovery: Boolean(v.recovery),
+        hasRecoveryEmail: Boolean(v.recoveryEmail),
+        secretCount: store.countSecrets(v.id),
+        createdAt: v.createdAt,
+        updatedAt: v.updatedAt,
+      },
+    ],
+  });
+});
+
+app.get("/vaults/:id", (c) => {
+  const vault = store.getVaultById(c.req.param("id"));
+  if (!vault) return c.json({ error: "Not found" }, 404);
+  return c.json({ vault });
+});
+
+app.post("/vaults", async (c) => {
+  const body = await c.req.json<{
+    name?: string;
+    email?: string;
+    recoveryEmail?: string;
+    salt: string;
+    verifier: string;
+    recovery?: RecoveryBundle | null;
+  }>();
+
+  if (!body?.salt || !body?.verifier) {
+    return c.json({ error: "salt and verifier are required" }, 400);
+  }
+
+  try {
+    const vault = store.createVault({
+      name: body.name?.trim() || "OpsVault",
+      email: body.email,
+      recoveryEmail: body.recoveryEmail,
+      salt: body.salt,
+      verifier: body.verifier,
+      recovery: body.recovery ?? null,
+    });
+    audit(c, "vault.create", `${vault.id}:${vault.name}`);
+    return c.json({ vault }, 201);
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Create failed" },
+      400
+    );
+  }
+});
+
+app.delete("/vaults/:id", (c) => {
+  const id = c.req.param("id");
+  const ok = store.deleteVault(id);
+  if (!ok) return c.json({ error: "Not found" }, 404);
+  audit(c, "vault.create", `deleted:${id}`);
+  return c.json({ ok: true });
+});
+
+// Compat: single-vault style endpoints (active vault via header)
 
 app.get("/vault", (c) => {
-  const vault = store.getVault();
+  const vault = store.resolveVault(vaultIdFrom(c));
   if (!vault) return c.json({ vault: null });
   return c.json({ vault });
 });
@@ -98,43 +250,26 @@ app.post("/vault", async (c) => {
     return c.json({ error: "salt and verifier are required" }, 400);
   }
 
-  try {
-    const vault = store.createVault({
-      name: body.name?.trim() || "OpsVault",
-      salt: body.salt,
-      verifier: body.verifier,
-      recovery: body.recovery ?? null,
-    });
-    audit(c, "vault.create", vault.name);
-    return c.json({ vault }, 201);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Failed to create vault";
-    const status = msg.includes("already exists") ? 409 : 500;
-    return c.json({ error: msg }, status);
-  }
+  const vault = store.createVault({
+    name: body.name?.trim() || "OpsVault",
+    salt: body.salt,
+    verifier: body.verifier,
+    recovery: body.recovery ?? null,
+  });
+  audit(c, "vault.create", vault.name);
+  return c.json({ vault }, 201);
 });
 
 app.put("/vault/recovery", async (c) => {
-  const vault = store.getVault();
+  const vault = store.resolveVault(vaultIdFrom(c));
   if (!vault) return c.json({ error: "No vault" }, 400);
 
   const body = await c.req.json<{ recovery: RecoveryBundle | null }>();
   store.setRecovery(vault.id, body.recovery ?? null);
-  audit(
-    c,
-    body.recovery ? "vault.recovery.set" : "vault.recovery.clear"
-  );
-  const updated = store.getVault();
-  return c.json({ vault: updated });
+  audit(c, body.recovery ? "vault.recovery.set" : "vault.recovery.clear", vault.id);
+  return c.json({ vault: store.getVaultById(vault.id) });
 });
 
-/**
- * Client-reported unlock outcome.
- * IMPORTANT: unlock is zero-knowledge (client-side). Offline password cracking
- * of a stolen dump leaves NO server trace. These events only reflect UI/API
- * sessions that choose to report — useful for "unlock I didn't do", not for
- * proving the password was never cracked offline.
- */
 app.post("/vault/session", async (c) => {
   const body = await c.req.json<{
     result: "ok" | "fail";
@@ -153,9 +288,9 @@ app.post("/vault/session", async (c) => {
   return c.json({ ok: true });
 });
 
-/** Apply password rotation (new salt/verifier + re-encrypted secrets). */
 app.post("/vault/rekey", async (c) => {
   const body = await c.req.json<{
+    vaultId?: string;
     salt: string;
     verifier: string;
     secrets: Array<{ id: string; encryptedData: string }>;
@@ -168,12 +303,13 @@ app.post("/vault/rekey", async (c) => {
 
   try {
     const vault = store.rekeyVault({
+      vaultId: body.vaultId ?? vaultIdFrom(c),
       salt: body.salt,
       verifier: body.verifier,
       secrets: body.secrets,
       clearRecovery: body.clearRecovery !== false,
     });
-    audit(c, "vault.rekey", `${body.secrets.length} secrets`);
+    audit(c, "vault.rekey", `${vault.id}:${body.secrets.length}`);
     return c.json({ vault });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Rekey failed";
@@ -181,11 +317,9 @@ app.post("/vault/rekey", async (c) => {
   }
 });
 
-// ── Backup ────────────────────────────────────────────────
-
 app.get("/vault/export", (c) => {
   try {
-    const backup = store.exportBackup();
+    const backup = store.exportBackup(vaultIdFrom(c));
     audit(c, "vault.export", `${backup.secrets.length} secrets`);
     return c.json(backup);
   } catch (err) {
@@ -198,31 +332,29 @@ app.post("/vault/import", async (c) => {
   const body = await c.req.json<{
     backup: VaultBackupV1;
     force?: boolean;
+    replaceVaultId?: string;
   }>();
 
   try {
     assertVaultBackup(body.backup);
-    const result = store.importBackup(body.backup, { force: body.force });
+    const result = store.importBackup(body.backup, {
+      force: body.force,
+      replaceVaultId: body.replaceVaultId ?? vaultIdFrom(c),
+    });
     audit(
       c,
       "vault.import",
-      `force=${Boolean(body.force)} count=${result.imported}`
+      `force=${Boolean(body.force)} count=${result.imported} id=${result.vault.id}`
     );
     return c.json(
-      {
-        vault: result.vault,
-        imported: result.imported,
-      },
-      body.force ? 200 : 201
+      { vault: result.vault, imported: result.imported },
+      201
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Import failed";
-    const status = msg.includes("already exists") ? 409 : 400;
-    return c.json({ error: msg }, status);
+    return c.json({ error: msg }, 400);
   }
 });
-
-// ── Audit ─────────────────────────────────────────────────
 
 app.get("/audit", (c) => {
   const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
@@ -244,31 +376,83 @@ app.get("/audit", (c) => {
   });
 });
 
-// ── Secrets ───────────────────────────────────────────────
+// ── Folders & tags ────────────────────────────────────────
+
+app.get("/folders", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ folders: [] });
+  return c.json({ folders: store.listFolders(vault.id) });
+});
+
+app.post("/folders", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{ name: string }>();
+  try {
+    const folder = store.createFolder({
+      vaultId: vault.id,
+      name: body.name ?? "",
+    });
+    return c.json({ folder }, 201);
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Create folder failed" },
+      400
+    );
+  }
+});
+
+app.delete("/folders/:id", (c) => {
+  const ok = store.deleteFolder(c.req.param("id"));
+  if (!ok) return c.json({ error: "Not found" }, 404);
+  return c.json({ ok: true });
+});
+
+app.get("/tags", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ tags: [] });
+  return c.json({ tags: store.listTags(vault.id) });
+});
+
+// ── Secrets (scoped by X-Vault-Id) ────────────────────────
 
 app.get("/secrets", (c) => {
-  const vault = store.getVault();
+  const vault = store.resolveVault(vaultIdFrom(c));
   if (!vault) return c.json({ items: [] });
-  audit(c, "secret.list");
-  return c.json({ items: store.listSecrets(vault.id) });
+  const workspaceId = c.req.query("workspaceId") || null;
+  audit(c, "secret.list", workspaceId ? `org:${workspaceId}` : vault.id);
+  return c.json({
+    items: store.listSecrets(vault.id, { workspaceId }),
+  });
 });
 
 app.get("/secrets/:id", (c) => {
   const item = store.getSecret(c.req.param("id"));
   if (!item) return c.json({ error: "Not found" }, 404);
+  const active = vaultIdFrom(c);
+  // Personal: owner only. Org-shared: any member with list access path.
+  if (active && item.vaultId !== active) {
+    if (!(item.workspaceId && item.visibility === "org")) {
+      return c.json({ error: "Not found" }, 404);
+    }
+  }
   audit(c, "secret.read", item.id);
   return c.json(item);
 });
 
 app.post("/secrets", async (c) => {
-  const vault = store.getVault();
+  const vault = store.resolveVault(vaultIdFrom(c));
   if (!vault) return c.json({ error: "No vault — init first" }, 400);
 
   const body = await c.req.json<{
     type: SecretType;
     title: string;
     encryptedData: string;
+    url?: string | null;
+    folderId?: string | null;
     tags?: string[];
+    workspaceId?: string | null;
+    visibility?: "private" | "org";
   }>();
 
   if (!body?.type || !body?.title || !body?.encryptedData) {
@@ -278,21 +462,77 @@ app.post("/secrets", async (c) => {
     );
   }
 
+  const bodyFull = body as typeof body & { groupId?: string | null };
   const item = store.createSecret({
     vaultId: vault.id,
     type: body.type,
     title: body.title,
     encryptedData: body.encryptedData,
+    url: body.url,
+    folderId: body.folderId,
     tags: body.tags,
+    workspaceId: body.workspaceId ?? null,
+    visibility: body.visibility ?? "private",
+    ownerVaultId: vault.id,
+    groupId: bodyFull.groupId ?? null,
   });
   audit(c, "secret.create", `${item.type}:${item.id}`);
   return c.json(item, 201);
+});
+
+// ── Org vault key (sealed under each member master key) ───
+
+app.get("/workspaces/:id/org-key", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const sealed = store.getWorkspaceOrgKey(c.req.param("id"), vault.id);
+  return c.json({ sealedKey: sealed });
+});
+
+app.put("/workspaces/:id/org-key", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{ sealedKey: string }>();
+  if (!body?.sealedKey) return c.json({ error: "sealedKey required" }, 400);
+  store.putWorkspaceOrgKey(c.req.param("id"), vault.id, body.sealedKey);
+  return c.json({ ok: true });
+});
+
+app.get("/workspaces/:id/groups", (c) => {
+  return c.json({ groups: store.listGroups(c.req.param("id")) });
+});
+
+app.post("/workspaces/:id/groups", async (c) => {
+  const body = await c.req.json<{ name: string }>();
+  try {
+    const group = store.createGroup(c.req.param("id"), body.name ?? "");
+    return c.json({ group }, 201);
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Create group failed" },
+      400
+    );
+  }
+});
+
+app.post("/workspaces/:id/groups/:gid/members", async (c) => {
+  const body = await c.req.json<{ memberId: string }>();
+  if (!body?.memberId) return c.json({ error: "memberId required" }, 400);
+  store.addGroupMember(c.req.param("gid"), body.memberId);
+  return c.json({ ok: true });
+});
+
+app.delete("/workspaces/:id/groups/:gid/members/:mid", (c) => {
+  store.removeGroupMember(c.req.param("gid"), c.req.param("mid"));
+  return c.json({ ok: true });
 });
 
 app.patch("/secrets/:id", async (c) => {
   const body = await c.req.json<{
     title?: string;
     encryptedData?: string;
+    url?: string | null;
+    folderId?: string | null;
     tags?: string[];
   }>();
 
@@ -310,9 +550,225 @@ app.delete("/secrets/:id", (c) => {
   return c.json({ ok: true });
 });
 
-const port = Number(process.env.PORT ?? 8787);
+// ── Workspaces & shares (scoped to active vault membership) ─
+
+app.get("/workspaces", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ workspaces: [] });
+  return c.json({
+    workspaces: store.listWorkspacesForVault(vault.id, vault.email),
+  });
+});
+
+app.post("/workspaces", async (c) => {
+  const body = await c.req.json<{ name: string }>();
+  try {
+    const vault = store.resolveVault(vaultIdFrom(c));
+    if (!vault) return c.json({ error: "Unlock vault first" }, 400);
+    const workspace = store.createWorkspace({
+      name: body.name ?? "",
+      ownerVaultId: vault.id,
+      ownerEmail: vault.email,
+    });
+    return c.json({ workspace }, 201);
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Create failed" },
+      400
+    );
+  }
+});
+
+/** Join org by invite token (active vault becomes member). */
+app.post("/workspaces/join", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "Unlock vault first" }, 400);
+  const body = await c.req.json<{ token: string }>();
+  const token = body?.token?.trim();
+  if (!token) return c.json({ error: "token required" }, 400);
+  try {
+    const result = store.acceptInvite({ token, vaultId: vault.id });
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Join failed" },
+      400
+    );
+  }
+});
+
+app.get("/workspaces/:id/members", (c) => {
+  return c.json({
+    members: store.listWorkspaceMembers(c.req.param("id")),
+  });
+});
+
+app.post("/workspaces/:id/members", async (c) => {
+  const body = await c.req.json<{
+    email: string;
+    role?: "admin" | "member" | "viewer";
+    sealedOrgKey?: string | null;
+  }>();
+  try {
+    const member = store.inviteWorkspaceMember({
+      workspaceId: c.req.param("id"),
+      email: body.email ?? "",
+      role: body.role,
+      sealedOrgKey: body.sealedOrgKey ?? null,
+    });
+    return c.json({ member }, 201);
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Invite failed" },
+      400
+    );
+  }
+});
+
+app.patch("/workspaces/:wid/members/:mid", async (c) => {
+  const body = await c.req.json<{
+    role?: "admin" | "member" | "viewer";
+    revoke?: boolean;
+    sealedOrgKey?: string | null;
+  }>();
+  if (body.sealedOrgKey) {
+    const ok = store.setMemberSealedOrgKey(
+      c.req.param("mid"),
+      body.sealedOrgKey
+    );
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    return c.json({ ok: true });
+  }
+  if (body.revoke) {
+    const ok = store.revokeMember(c.req.param("mid"));
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    return c.json({ ok: true });
+  }
+  if (body.role) {
+    const ok = store.updateMemberRole(c.req.param("mid"), body.role);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    return c.json({ ok: true, role: body.role });
+  }
+  return c.json({ error: "role, revoke or sealedOrgKey required" }, 400);
+});
+
+/** Preview invite (public-ish — token is secret). */
+app.get("/invites/:token", (c) => {
+  const inv = store.getInviteByToken(c.req.param("token"));
+  if (!inv) return c.json({ error: "Invalid invite" }, 404);
+  return c.json({
+    invite: {
+      email: inv.email,
+      role: inv.role,
+      status: inv.status,
+      workspaceName: inv.workspaceName,
+      workspaceId: inv.workspaceId,
+    },
+  });
+});
+
+/** Accept invite into active vault. */
+app.post("/invites/:token/accept", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "Unlock/create a vault first" }, 400);
+  try {
+    const result = store.acceptInvite({
+      token: c.req.param("token"),
+      vaultId: vault.id,
+    });
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Accept failed" },
+      400
+    );
+  }
+});
+
+app.get("/shares", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ shares: [] });
+  return c.json({ shares: store.listSecretShares(vault.id) });
+});
+
+app.post("/shares", async (c) => {
+  const body = await c.req.json<{
+    secretId?: string | null;
+    vaultId: string;
+    workspaceId?: string | null;
+    scope: "workspace" | "external";
+    title: string;
+    type: string;
+    packageJson?: string | null;
+    recipientEmail?: string | null;
+    note?: string | null;
+    expiresAt?: string | null;
+    maxViews?: number | null;
+  }>();
+  if (!body?.vaultId || !body?.title || !body?.scope) {
+    return c.json({ error: "vaultId, title, scope required" }, 400);
+  }
+  const share = store.createSecretShare(body);
+  return c.json({ share }, 201);
+});
+
+/** Claim share by access token (enforces TTL + max views). */
+app.post("/shares/claim/:token", async (c) => {
+  try {
+    const claimed = store.claimSecretShare(c.req.param("token"));
+    return c.json({
+      share: {
+        id: claimed.id,
+        title: claimed.title,
+        type: claimed.type,
+        package: JSON.parse(claimed.packageJson),
+        viewsRemaining: claimed.viewsRemaining,
+      },
+    });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Claim failed" },
+      400
+    );
+  }
+});
+
+app.get("/shares/:id", (c) => {
+  const share = store.getSecretShare(c.req.param("id"));
+  if (!share) return c.json({ error: "Not found" }, 404);
+  return c.json({ share });
+});
+
+app.delete("/shares/:id", (c) => {
+  const ok = store.deleteSecretShare(c.req.param("id"));
+  if (!ok) return c.json({ error: "Not found" }, 404);
+  return c.json({ ok: true });
+});
+
+app.get("/vault/policy", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ policy: null });
+  const raw = store.getPasswordPolicy(vault.id);
+  return c.json({
+    policy: raw ? JSON.parse(raw) : null,
+  });
+});
+
+app.put("/vault/policy", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{ policy: Record<string, unknown> }>();
+  store.setPasswordPolicy(vault.id, JSON.stringify(body.policy ?? {}));
+  return c.json({ ok: true });
+});
+
+/** Prefer OPS_VAULT_API_PORT (default 8790) to avoid OpsGate on 8787. */
+const port = Number(
+  process.env.OPS_VAULT_API_PORT ?? process.env.PORT ?? 8790
+);
 
 console.log(`ops-vault api listening on http://localhost:${port}`);
+console.log(`CORS origins: ${corsOrigins.join(", ")}`);
 
 serve({
   fetch: app.fetch,
