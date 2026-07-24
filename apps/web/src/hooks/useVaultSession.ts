@@ -15,6 +15,7 @@ export type VaultPhase =
   | "setup"
   | "locked"
   | "unlocking"
+  | "need_2fa"
   | "unlocked"
   | "error";
 
@@ -29,12 +30,58 @@ export function useVaultSession() {
   const [error, setError] = useState<string | null>(null);
   const unlockedRef = useRef(false);
   const unlockedVaultIdRef = useRef<string | null>(null);
+  /** Master key held while waiting for TOTP (not yet granted to app). */
+  const pendingKeyRef = useRef<MasterKey | null>(null);
+
+  const clearPendingKey = useCallback(() => {
+    if (pendingKeyRef.current) {
+      wipeKey(pendingKeyRef.current);
+      pendingKeyRef.current = null;
+    }
+  }, []);
+
+  const maybeRequire2fa = useCallback(
+    async (
+      master: MasterKey,
+      v: VaultRecordWithRecovery
+    ): Promise<"unlocked" | "need_2fa"> => {
+      try {
+        const { enabled } = await api.getTwoFactorStatus();
+        if (!enabled) {
+          clearPendingKey();
+          setKey(master);
+          unlockedRef.current = true;
+          unlockedVaultIdRef.current = v.id;
+          setPhase("unlocked");
+          return "unlocked";
+        }
+      } catch {
+        // Status unreachable after password OK — fail open so vault still works.
+        clearPendingKey();
+        setKey(master);
+        unlockedRef.current = true;
+        unlockedVaultIdRef.current = v.id;
+        setPhase("unlocked");
+        return "unlocked";
+      }
+      // Hold key until TOTP succeeds
+      clearPendingKey();
+      pendingKeyRef.current = master;
+      setKey(null);
+      unlockedRef.current = false;
+      unlockedVaultIdRef.current = null;
+      setPhase("need_2fa");
+      return "need_2fa";
+    },
+    [clearPendingKey]
+  );
 
   const selectVault = useCallback(async (id: string) => {
     setKey((prev) => {
       if (prev) wipeKey(prev);
       return null;
     });
+    clearPendingKey();
     unlockedRef.current = false;
     unlockedVaultIdRef.current = null;
     api.setActiveVaultId(id);
@@ -53,7 +100,6 @@ export function useVaultSession() {
   const refreshVault = useCallback(async () => {
     setError(null);
     try {
-      // Session is vault-scoped — never load the global vault directory.
       const activeId = api.getActiveVaultId() || localStorage.getItem(LS_KEY);
       if (activeId) {
         api.setActiveVaultId(activeId);
@@ -76,6 +122,8 @@ export function useVaultSession() {
           unlockedVaultIdRef.current === v.id
         ) {
           setPhase("unlocked");
+        } else if (pendingKeyRef.current) {
+          setPhase("need_2fa");
         } else {
           unlockedRef.current = false;
           unlockedVaultIdRef.current = null;
@@ -89,15 +137,16 @@ export function useVaultSession() {
       setVaults([]);
       unlockedRef.current = false;
       unlockedVaultIdRef.current = null;
+      clearPendingKey();
       setPhase("setup");
     } catch (err) {
-      // Invalid/stale session → clean sign-in
       const msg = err instanceof Error ? err.message : "API unreachable";
       if (msg.includes("Not found") || msg.includes("404")) {
         api.setActiveVaultId(null);
         localStorage.removeItem(LS_KEY);
         setVault(null);
         setVaults([]);
+        clearPendingKey();
         setPhase("setup");
         return;
       }
@@ -111,7 +160,6 @@ export function useVaultSession() {
     void refreshVault();
   }, [refreshVault]);
 
-  /** Create account (email) + vault, unlock immediately. */
   const register = useCallback(
     async (
       email: string,
@@ -133,6 +181,7 @@ export function useVaultSession() {
         localStorage.setItem(LS_KEY, v.id);
         localStorage.setItem(LS_EMAIL, email.trim().toLowerCase());
         setVault(v);
+        clearPendingKey();
         setKey(auth.key);
         unlockedRef.current = true;
         unlockedVaultIdRef.current = v.id;
@@ -158,50 +207,51 @@ export function useVaultSession() {
     []
   );
 
-  /** Lookup by email then unlock with master password. */
-  const login = useCallback(async (email: string, password: string) => {
-    setError(null);
-    setPhase("unlocking");
-    try {
-      const { vault: v } = await api.loginAccount(email.trim());
-      api.setActiveVaultId(v.id);
-      localStorage.setItem(LS_KEY, v.id);
-      localStorage.setItem(LS_EMAIL, email.trim().toLowerCase());
-      setVault(v);
-      setKey((prev) => {
-        if (prev) wipeKey(prev);
-        return null;
-      });
-      const master = await unlockVault(password, v.salt, v.verifier);
-      setKey(master);
-      unlockedRef.current = true;
-      unlockedVaultIdRef.current = v.id;
-      setPhase("unlocked");
-      void api.reportUnlock("ok", v.id).catch(() => undefined);
-      setVaults([
-        {
-          id: v.id,
-          name: v.name,
-          email: v.email,
-          hasRecovery: Boolean(v.recovery),
-          hasRecoveryEmail: Boolean(v.recoveryEmail),
-          secretCount: 0,
-          createdAt: v.createdAt,
-          updatedAt: v.updatedAt,
-        },
-      ]);
-    } catch (err) {
-      unlockedRef.current = false;
-      unlockedVaultIdRef.current = null;
-      setPhase("setup");
-      setError(err instanceof Error ? err.message : "Sign-in failed");
-      void api
-        .reportUnlock("fail", email.trim().toLowerCase())
-        .catch(() => undefined);
-    }
-  }, []);
+  const login = useCallback(
+    async (email: string, password: string) => {
+      setError(null);
+      setPhase("unlocking");
+      try {
+        const { vault: v } = await api.loginAccount(email.trim());
+        api.setActiveVaultId(v.id);
+        localStorage.setItem(LS_KEY, v.id);
+        localStorage.setItem(LS_EMAIL, email.trim().toLowerCase());
+        setVault(v);
+        setKey((prev) => {
+          if (prev) wipeKey(prev);
+          return null;
+        });
+        const master = await unlockVault(password, v.salt, v.verifier);
+        setVaults([
+          {
+            id: v.id,
+            name: v.name,
+            email: v.email,
+            hasRecovery: Boolean(v.recovery),
+            hasRecoveryEmail: Boolean(v.recoveryEmail),
+            secretCount: 0,
+            createdAt: v.createdAt,
+            updatedAt: v.updatedAt,
+          },
+        ]);
+        const gate = await maybeRequire2fa(master, v);
+        if (gate === "unlocked") {
+          void api.reportUnlock("ok", v.id).catch(() => undefined);
+        }
+      } catch (err) {
+        unlockedRef.current = false;
+        unlockedVaultIdRef.current = null;
+        clearPendingKey();
+        setPhase("setup");
+        setError(err instanceof Error ? err.message : "Sign-in failed");
+        void api
+          .reportUnlock("fail", email.trim().toLowerCase())
+          .catch(() => undefined);
+      }
+    },
+    [maybeRequire2fa, clearPendingKey]
+  );
 
-  /** Legacy: create vault without email (extra vault while unlocked flow). */
   const setup = useCallback(
     async (password: string, name = "OpsVault", email?: string) => {
       if (email) {
@@ -220,6 +270,7 @@ export function useVaultSession() {
         api.setActiveVaultId(v.id);
         localStorage.setItem(LS_KEY, v.id);
         setVault(v);
+        clearPendingKey();
         setKey(auth.key);
         unlockedRef.current = true;
         unlockedVaultIdRef.current = v.id;
@@ -252,47 +303,49 @@ export function useVaultSession() {
       setPhase("unlocking");
       try {
         if (key) wipeKey(key);
+        clearPendingKey();
         const master = await unlockVault(password, vault.salt, vault.verifier);
-        setKey(master);
-        unlockedRef.current = true;
-        unlockedVaultIdRef.current = vault.id;
-        setPhase("unlocked");
-        void api.reportUnlock("ok", vault.id).catch(() => undefined);
+        const gate = await maybeRequire2fa(master, vault);
+        if (gate === "unlocked") {
+          void api.reportUnlock("ok", vault.id).catch(() => undefined);
+        }
       } catch (err) {
         unlockedRef.current = false;
         unlockedVaultIdRef.current = null;
+        clearPendingKey();
         setPhase("locked");
         setError(err instanceof Error ? err.message : "Invalid password");
         void api.reportUnlock("fail", vault.id).catch(() => undefined);
       }
     },
-    [vault, key]
+    [vault, key, maybeRequire2fa, clearPendingKey]
   );
 
   const unlockRecovery = useCallback(
     async (recoveryPassword: string) => {
       if (!vault?.recovery) {
-        setError("No recovery key configured");
+        setError("No recovery key configured for this vault");
         return;
       }
       setError(null);
       setPhase("unlocking");
       try {
         if (key) wipeKey(key);
+        clearPendingKey();
         const master = await unlockWithRecovery(
           vault.recovery,
           recoveryPassword
         );
-        setKey(master);
-        unlockedRef.current = true;
-        unlockedVaultIdRef.current = vault.id;
-        setPhase("unlocked");
-        void api
-          .reportUnlock("ok", `recovery:${vault.id}`)
-          .catch(() => undefined);
+        const gate = await maybeRequire2fa(master, vault);
+        if (gate === "unlocked") {
+          void api
+            .reportUnlock("ok", `recovery:${vault.id}`)
+            .catch(() => undefined);
+        }
       } catch (err) {
         unlockedRef.current = false;
         unlockedVaultIdRef.current = null;
+        clearPendingKey();
         setPhase("locked");
         setError(err instanceof Error ? err.message : "Recovery failed");
         void api
@@ -300,12 +353,126 @@ export function useVaultSession() {
           .catch(() => undefined);
       }
     },
-    [vault, key]
+    [vault, key, maybeRequire2fa, clearPendingKey]
+  );
+
+  /** Complete unlock after password + TOTP. */
+  const verify2fa = useCallback(async (code: string) => {
+    setError(null);
+    setPhase("unlocking");
+    try {
+      await api.verifyTwoFactor(code);
+      const master = pendingKeyRef.current;
+      if (!master) {
+        setPhase("locked");
+        setError("Session expired — enter your password again");
+        return;
+      }
+      pendingKeyRef.current = null;
+      setKey(master);
+      unlockedRef.current = true;
+      unlockedVaultIdRef.current = vault?.id ?? null;
+      setPhase("unlocked");
+      if (vault) {
+        void api.reportUnlock("ok", `2fa:${vault.id}`).catch(() => undefined);
+      }
+    } catch (err) {
+      setPhase("need_2fa");
+      setError(err instanceof Error ? err.message : "Invalid authenticator code");
+    }
+  }, [vault]);
+
+  const cancel2fa = useCallback(() => {
+    clearPendingKey();
+    setKey(null);
+    unlockedRef.current = false;
+    unlockedVaultIdRef.current = null;
+    setPhase(vault ? "locked" : "setup");
+    setError(null);
+  }, [vault]);
+
+  /**
+   * Load vault by email for recovery (forgot password) without unlocking.
+   * Returns whether a recovery key exists.
+   */
+  const prepareRecovery = useCallback(async (email: string) => {
+    setError(null);
+    try {
+      const { vault: v } = await api.loginAccount(email.trim());
+      api.setActiveVaultId(v.id);
+      localStorage.setItem(LS_KEY, v.id);
+      localStorage.setItem(LS_EMAIL, email.trim().toLowerCase());
+      setVault(v);
+      setVaults([
+        {
+          id: v.id,
+          name: v.name,
+          email: v.email,
+          hasRecovery: Boolean(v.recovery),
+          hasRecoveryEmail: Boolean(v.recoveryEmail),
+          secretCount: 0,
+          createdAt: v.createdAt,
+          updatedAt: v.updatedAt,
+        },
+      ]);
+      setPhase("locked");
+      return { hasRecovery: Boolean(v.recovery), vaultName: v.name };
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Account not found");
+      throw err;
+    }
+  }, []);
+
+  /** Restore vault from sealed/plain backup file (forgot-password path). */
+  const importBackupRestore = useCallback(
+    async (backupJson: string, exportPassword?: string) => {
+      setError(null);
+      setPhase("unlocking");
+      try {
+        const { parseBackupJson } = await import("@ops-vault/core");
+        const backup = await parseBackupJson(
+          backupJson,
+          exportPassword && exportPassword.length > 0
+            ? exportPassword
+            : undefined
+        );
+        const result = await api.importVault({ backup, force: true });
+        api.setActiveVaultId(result.vault.id);
+        localStorage.setItem(LS_KEY, result.vault.id);
+        setVault(result.vault);
+        // Import does not give master key — user must unlock with the
+        // password that was used when the backup was created.
+        unlockedRef.current = false;
+        unlockedVaultIdRef.current = null;
+        clearPendingKey();
+        setKey(null);
+        setPhase("locked");
+        setVaults([
+          {
+            id: result.vault.id,
+            name: result.vault.name,
+            email: result.vault.email,
+            hasRecovery: Boolean(result.vault.recovery),
+            hasRecoveryEmail: Boolean(result.vault.recoveryEmail),
+            secretCount: result.imported,
+            createdAt: result.vault.createdAt,
+            updatedAt: result.vault.updatedAt,
+          },
+        ]);
+        return result;
+      } catch (err) {
+        setPhase(vault ? "locked" : "setup");
+        setError(err instanceof Error ? err.message : "Import failed");
+        throw err;
+      }
+    },
+    [vault]
   );
 
   const lock = useCallback(() => {
     if (key) wipeKey(key);
     setKey(null);
+    clearPendingKey();
     unlockedRef.current = false;
     unlockedVaultIdRef.current = null;
     setPhase(vault ? "locked" : "setup");
@@ -314,6 +481,7 @@ export function useVaultSession() {
   const signOut = useCallback(() => {
     if (key) wipeKey(key);
     setKey(null);
+    clearPendingKey();
     unlockedRef.current = false;
     unlockedVaultIdRef.current = null;
     api.setActiveVaultId(null);
@@ -341,7 +509,6 @@ export function useVaultSession() {
     };
   }, [phase, lock]);
 
-  // Lock when leaving the browser if "Remember this browser" is off
   useEffect(() => {
     if (phase !== "unlocked") return;
     if (localStorage.getItem("ops-vault.rememberBrowser") === "1") return;
@@ -360,6 +527,7 @@ export function useVaultSession() {
   const replaceKey = useCallback(
     (newKey: MasterKey) => {
       if (key && key !== newKey) wipeKey(key);
+      clearPendingKey();
       setKey(newKey);
       unlockedRef.current = true;
       if (vault) unlockedVaultIdRef.current = vault.id;
@@ -389,6 +557,10 @@ export function useVaultSession() {
     createAdditionalVault,
     unlock,
     unlockRecovery,
+    verify2fa,
+    cancel2fa,
+    prepareRecovery,
+    importBackupRestore,
     lock,
     signOut,
     refreshVault,

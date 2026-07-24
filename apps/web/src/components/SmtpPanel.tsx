@@ -137,6 +137,18 @@ export function SmtpPanel({ onError }: Props) {
           stored on the server for this vault (not inside the zero-knowledge
           blob). Leave password blank when saving to keep the current one.
         </p>
+        <ul className="mt-2 list-inside list-disc text-xs text-[var(--ov-faint)]">
+          <li>
+            Port <strong>587</strong>: leave TLS/SSL unchecked (STARTTLS)
+          </li>
+          <li>
+            Port <strong>465</strong>: check TLS/SSL (implicit TLS)
+          </li>
+          <li>
+            After changing settings, use <strong>Send test</strong> — errors
+            from the SMTP server are shown in full
+          </li>
+        </ul>
       </div>
 
       {envFallback?.configured && (

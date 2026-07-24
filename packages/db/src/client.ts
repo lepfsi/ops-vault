@@ -369,14 +369,21 @@ CREATE TABLE IF NOT EXISTS workspace_group_members (
       console.warn("secret_shares migrate:", err);
     }
 
-    // vault_settings.smtp_json (UI-configurable SMTP for share emails)
+    // vault_settings extras (SMTP + account 2FA)
     try {
       const vsCols = this.db
         .prepare("PRAGMA table_info(vault_settings)")
         .all() as unknown as Array<{ name: string }>;
       const vsNames = new Set(vsCols.map((c) => c.name));
-      if (vsNames.size > 0 && !vsNames.has("smtp_json")) {
-        this.db.exec("ALTER TABLE vault_settings ADD COLUMN smtp_json TEXT");
+      if (vsNames.size > 0) {
+        if (!vsNames.has("smtp_json")) {
+          this.db.exec("ALTER TABLE vault_settings ADD COLUMN smtp_json TEXT");
+        }
+        if (!vsNames.has("two_factor_json")) {
+          this.db.exec(
+            "ALTER TABLE vault_settings ADD COLUMN two_factor_json TEXT"
+          );
+        }
       }
     } catch (err) {
       console.warn("vault_settings migrate:", err);
@@ -1764,6 +1771,27 @@ CREATE TABLE IF NOT EXISTS workspace_group_members (
            updated_at = excluded.updated_at`
       )
       .run(vaultId, smtpJson, now);
+  }
+
+  /** Account 2FA TOTP JSON (includes secret when enabled). */
+  getTwoFactorRaw(vaultId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT two_factor_json FROM vault_settings WHERE vault_id = ?`)
+      .get(vaultId) as unknown as { two_factor_json: string | null } | undefined;
+    return row?.two_factor_json ?? null;
+  }
+
+  setTwoFactorRaw(vaultId: string, twoFactorJson: string | null): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO vault_settings (vault_id, two_factor_json, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(vault_id) DO UPDATE SET
+           two_factor_json = excluded.two_factor_json,
+           updated_at = excluded.updated_at`
+      )
+      .run(vaultId, twoFactorJson, now);
   }
 }
 

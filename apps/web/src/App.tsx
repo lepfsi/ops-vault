@@ -239,11 +239,13 @@ export default function App() {
       phase={
         session.phase === "error"
           ? "locked"
-          : session.phase === "unlocking"
-            ? "unlocking"
-            : session.vault && !creatingExtra
-              ? "locked"
-              : "setup"
+          : session.phase === "need_2fa"
+            ? "need_2fa"
+            : session.phase === "unlocking"
+              ? "unlocking"
+              : session.vault && !creatingExtra
+                ? "locked"
+                : "setup"
       }
       hasLocalVault={Boolean(session.vault) && !creatingExtra}
       vaultName={session.vault?.name}
@@ -268,7 +270,21 @@ export default function App() {
         setSection("home");
         setRefreshToken((n) => n + 1);
       }}
-      onUnlockRecovery={session.unlockRecovery}
+      onUnlockRecovery={async (pass) => {
+        await session.unlockRecovery(pass);
+        setSection("home");
+        setRefreshToken((n) => n + 1);
+      }}
+      onVerify2fa={async (code) => {
+        await session.verify2fa(code);
+        setSection("home");
+        setRefreshToken((n) => n + 1);
+      }}
+      onCancel2fa={session.cancel2fa}
+      onPrepareRecovery={session.prepareRecovery}
+      onImportBackup={async (json, exportPass) => {
+        await session.importBackupRestore(json, exportPass);
+      }}
       onSwitchAccount={() => {
         session.signOut();
         setCreatingExtra(false);
@@ -353,6 +369,7 @@ export default function App() {
     session.phase === "setup" ||
     session.phase === "locked" ||
     session.phase === "unlocking" ||
+    session.phase === "need_2fa" ||
     session.phase === "error" ||
     creatingExtra;
 

@@ -16,11 +16,13 @@
     "@ops-vault/core": "workspace:*",
     "@ops-vault/db": "workspace:*",
     "hono": "^4.8.4",
-    "nodemailer": "^7.0.5"
+    "nodemailer": "^7.0.13",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.32",
     "@types/nodemailer": "^6.4.17",
+    "@types/qrcode": "^1.5.5",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   },

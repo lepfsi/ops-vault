@@ -14,6 +14,7 @@ import {
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../lib/api";
 import type { AuditEvent } from "../lib/api";
+import { qrDataUrl as clientQrDataUrl } from "../lib/qrcode";
 
 interface Props {
   masterKey: MasterKey;
@@ -103,16 +104,30 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
     loadTrusted()
   );
   const [sessions, setSessions] = useState<DeviceSession[]>([]);
-  const [totpEnabled, setTotpEnabled] = useState(
-    () => localStorage.getItem("ops-vault.2fa.enabled") === "1"
-  );
+  const [tfEnabled, setTfEnabled] = useState(false);
+  const [tfRecoveryLeft, setTfRecoveryLeft] = useState(0);
+  const [tfSetup, setTfSetup] = useState<{
+    secret: string;
+    otpauthUri: string;
+    qrDataUrl: string | null;
+  } | null>(null);
+  const [tfCode, setTfCode] = useState("");
+  const [tfBusy, setTfBusy] = useState(false);
+  /** Shown once after enable — user must save these. */
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [passkeyNote, setPasskeyNote] = useState(
     () => localStorage.getItem("ops-vault.passkey.note") ?? ""
   );
 
   const load = useCallback(async () => {
     try {
-      const data = await api.getAudit(30);
+      const [data, tf] = await Promise.all([
+        api.getAudit(30),
+        api.getTwoFactorStatus().catch(() => ({
+          enabled: false,
+          configured: false,
+        })),
+      ]);
       setEvents(data.events);
       setSum({
         unlockOk: data.summary.unlockOk,
@@ -120,6 +135,8 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
         exports: data.summary.exports,
         rekeys: data.summary.rekeys,
       });
+      setTfEnabled(tf.enabled);
+      setTfRecoveryLeft(tf.recoveryRemaining ?? 0);
     } catch (err) {
       onError(err instanceof Error ? err.message : "Audit failed");
     }
@@ -129,6 +146,86 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
     void load();
     setSessions(ensureSession());
   }, [load]);
+
+  async function start2faSetup() {
+    setTfBusy(true);
+    setInfo(null);
+    setRecoveryCodes(null);
+    try {
+      const s = await api.setupTwoFactor();
+      const qr =
+        s.qrDataUrl ||
+        clientQrDataUrl(s.otpauthUri) ||
+        null;
+      setTfSetup({
+        secret: s.secret,
+        otpauthUri: s.otpauthUri,
+        qrDataUrl: qr,
+      });
+      setTfCode("");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "2FA setup failed");
+    } finally {
+      setTfBusy(false);
+    }
+  }
+
+  async function confirm2faEnable() {
+    setTfBusy(true);
+    setInfo(null);
+    try {
+      const res = await api.enableTwoFactor(tfCode.trim());
+      setTfEnabled(true);
+      setTfSetup(null);
+      setTfCode("");
+      setRecoveryCodes(res.recoveryCodes ?? []);
+      setTfRecoveryLeft(res.recoveryCodes?.length ?? 0);
+      setInfo(
+        "Two-factor enabled. Save the recovery codes below — they are shown only once."
+      );
+      localStorage.removeItem("ops-vault.2fa.enabled");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Invalid code");
+    } finally {
+      setTfBusy(false);
+    }
+  }
+
+  async function confirm2faDisable() {
+    setTfBusy(true);
+    setInfo(null);
+    try {
+      await api.disableTwoFactor(tfCode.trim());
+      setTfEnabled(false);
+      setTfSetup(null);
+      setTfCode("");
+      setRecoveryCodes(null);
+      setTfRecoveryLeft(0);
+      setInfo("Two-factor authentication disabled");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Disable failed");
+    } finally {
+      setTfBusy(false);
+    }
+  }
+
+  function downloadRecoveryCodes(codes: string[]) {
+    const body = [
+      "OpsVault 2FA recovery codes",
+      "Each code works once (unlock or disable 2FA).",
+      "",
+      ...codes,
+      "",
+      `Generated: ${new Date().toISOString()}`,
+    ].join("\n");
+    const blob = new Blob([body], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "opsvault-2fa-recovery-codes.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   async function handleRotate(e: FormEvent) {
     e.preventDefault();
@@ -173,9 +270,7 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
     };
     localStorage.setItem(TC_KEY, JSON.stringify(next));
     setTrusted(next);
-    setInfo(
-      "Trusted contact saved locally. Full recovery workflow ships with the server-side invite step."
-    );
+    setInfo("Saved locally as a contact reminder only.");
   }
 
   function clearTrusted() {
@@ -224,8 +319,8 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
           <h3 className="text-sm font-semibold">Trusted contact</h3>
         </div>
         <p className="text-xs text-[var(--ov-muted)]">
-          Someone who can help you recover access. They never receive your
-          master password — only a recovery assist flow.
+          Local reminder of who can help you offline. This is not a remote
+          recovery path — use a recovery key or sealed backup to regain access.
         </p>
         {trusted ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--ov-soft)] px-3 py-2 text-sm">
@@ -270,26 +365,166 @@ export function SecurityPanel({ masterKey, onRekeyed, onError }: Props) {
             <h3 className="text-sm font-semibold">Two-factor (TOTP)</h3>
           </div>
           <p className="text-xs text-[var(--ov-muted)]">
-            Second factor for unlock. TOTP secrets already live in your vault;
-            account-level 2FA gate is staged for the auth service.
+            After master password, scan the QR code (or enter the secret) in
+            Google Authenticator, Authy, 1Password, etc.
           </p>
-          <label className="flex items-center justify-between text-sm text-[var(--ov-muted)]">
-            Require 2FA at unlock
-            <input
-              type="checkbox"
-              checked={totpEnabled}
-              onChange={(e) => {
-                setTotpEnabled(e.target.checked);
-                localStorage.setItem(
-                  "ops-vault.2fa.enabled",
-                  e.target.checked ? "1" : "0"
-                );
-              }}
-            />
-          </label>
-          <p className="text-[11px] text-[var(--ov-faint)]">
-            Preference stored — enforcement lands with server sessions.
-          </p>
+
+          {recoveryCodes && recoveryCodes.length > 0 && (
+            <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+              <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+                Save these recovery codes now (shown once)
+              </p>
+              <p className="text-[11px] text-[var(--ov-muted)]">
+                If you lose your phone, use one of these codes to unlock or to
+                disable 2FA. Each code works only once.
+              </p>
+              <ul className="grid grid-cols-2 gap-1 font-mono text-xs">
+                {recoveryCodes.map((c) => (
+                  <li key={c} className="rounded bg-[var(--ov-soft)] px-2 py-1">
+                    {c}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    void navigator.clipboard.writeText(recoveryCodes.join("\n"))
+                  }
+                >
+                  Copy all
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => downloadRecoveryCodes(recoveryCodes)}
+                >
+                  Download .txt
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setRecoveryCodes(null)}
+                >
+                  I saved them
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {tfEnabled ? (
+            <div className="space-y-2">
+              <p className="text-sm text-emerald-600 dark:text-emerald-400">
+                Enabled — required at unlock
+                {tfRecoveryLeft > 0 && (
+                  <span className="ml-1 text-xs text-[var(--ov-muted)]">
+                    · {tfRecoveryLeft} recovery code
+                    {tfRecoveryLeft === 1 ? "" : "s"} left
+                  </span>
+                )}
+              </p>
+              <p className="text-[11px] text-[var(--ov-muted)]">
+                To disable: enter a <strong>recovery code</strong> (XXXX-XXXX)
+                from when you enabled 2FA, or a current 6-digit app code.
+              </p>
+              <input
+                className={field}
+                placeholder="Recovery code or 6-digit TOTP"
+                value={tfCode}
+                onChange={(e) => setTfCode(e.target.value)}
+                autoComplete="off"
+              />
+              <Button
+                type="button"
+                variant="danger"
+                disabled={tfBusy || tfCode.trim().length < 6}
+                onClick={() => void confirm2faDisable()}
+              >
+                {tfBusy ? "…" : "Disable 2FA"}
+              </Button>
+            </div>
+          ) : tfSetup ? (
+            <div className="space-y-2">
+              <p className="text-xs text-[var(--ov-muted)]">
+                Scan the QR code with your authenticator app, then enter a code
+                to confirm.
+              </p>
+              {tfSetup.qrDataUrl ? (
+                <div className="flex justify-center rounded-lg bg-white p-3">
+                  <img
+                    src={tfSetup.qrDataUrl}
+                    alt="2FA QR code"
+                    width={200}
+                    height={200}
+                    className="h-[200px] w-[200px]"
+                  />
+                </div>
+              ) : (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  QR unavailable (install <code>qrcode</code> on the API). Use
+                  the secret below.
+                </p>
+              )}
+              <div className="break-all rounded-lg bg-[var(--ov-soft)] px-2 py-1.5 font-mono text-[11px]">
+                {tfSetup.secret}
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs">
+                <button
+                  type="button"
+                  className="text-[var(--ov-accent)] hover:underline"
+                  onClick={() =>
+                    void navigator.clipboard.writeText(tfSetup.secret)
+                  }
+                >
+                  Copy secret
+                </button>
+                <a
+                  href={tfSetup.otpauthUri}
+                  className="text-[var(--ov-accent)] hover:underline"
+                >
+                  Open in authenticator
+                </a>
+              </div>
+              <input
+                className={field}
+                inputMode="numeric"
+                placeholder="6-digit code from app"
+                value={tfCode}
+                onChange={(e) => setTfCode(e.target.value)}
+                maxLength={8}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  disabled={tfBusy || tfCode.replace(/\s/g, "").length < 6}
+                  onClick={() => void confirm2faEnable()}
+                >
+                  {tfBusy ? "…" : "Confirm & enable"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={tfBusy}
+                  onClick={() => {
+                    setTfSetup(null);
+                    setTfCode("");
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={tfBusy}
+              onClick={() => void start2faSetup()}
+            >
+              {tfBusy ? "…" : "Set up authenticator"}
+            </Button>
+          )}
         </div>
 
         <div className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-5">

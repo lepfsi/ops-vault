@@ -179,7 +179,7 @@ export async function importVault(body: {
   backup: VaultBackupV1;
   force?: boolean;
   replaceVaultId?: string;
-}): Promise<{ vault: VaultRecord; imported: number }> {
+}): Promise<{ vault: VaultRecordWithRecovery; imported: number }> {
   return request("/vault/import", {
     method: "POST",
     body: JSON.stringify(body),
@@ -466,6 +466,61 @@ export async function getMailStatus(): Promise<{
   hasPassword?: boolean;
 }> {
   return request("/mail/status");
+}
+
+export async function getTwoFactorStatus(): Promise<{
+  enabled: boolean;
+  configured: boolean;
+  enabledAt?: string | null;
+  recoveryRemaining?: number;
+}> {
+  return request("/vault/2fa");
+}
+
+export async function setupTwoFactor(label?: string): Promise<{
+  secret: string;
+  otpauthUri: string;
+  qrDataUrl: string | null;
+  issuer: string;
+  label: string;
+}> {
+  return request("/vault/2fa/setup", {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function enableTwoFactor(code: string): Promise<{
+  enabled: boolean;
+  recoveryCodes: string[];
+  recoveryNote?: string;
+}> {
+  return request("/vault/2fa/enable", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function disableTwoFactor(code: string): Promise<{
+  enabled: boolean;
+  usedRecovery?: boolean;
+}> {
+  return request("/vault/2fa/disable", {
+    method: "POST",
+    body: JSON.stringify({ code, recoveryCode: code }),
+  });
+}
+
+export async function verifyTwoFactor(code: string): Promise<{
+  ok: boolean;
+  required?: boolean;
+  usedRecovery?: boolean;
+  recoveryRemaining?: number;
+}> {
+  return request("/vault/2fa/verify", {
+    method: "POST",
+    body: JSON.stringify({ code, recoveryCode: code }),
+  });
 }
 
 export type SmtpPublic = {

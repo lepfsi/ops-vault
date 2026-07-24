@@ -4,11 +4,15 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import {
   assertVaultBackup,
+  createOtpPayload,
+  otpauthUri,
+  verifyTotp,
   type RecoveryBundle,
   type SecretType,
   type VaultBackupV1,
 } from "@ops-vault/core";
 import { VaultStore, type AuditAction } from "@ops-vault/db";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Context } from "hono";
@@ -951,6 +955,288 @@ app.put("/vault/policy", async (c) => {
   const body = await c.req.json<{ policy: Record<string, unknown> }>();
   store.setPasswordPolicy(vault.id, JSON.stringify(body.policy ?? {}));
   return c.json({ ok: true });
+});
+
+// ── Account 2FA (TOTP + recovery codes) ──────────────────
+
+type TwoFactorStored = {
+  enabled: boolean;
+  secret: string;
+  issuer: string;
+  label: string;
+  algorithm: "SHA1";
+  digits: 6;
+  period: 30;
+  enabledAt?: string;
+  /** SHA-256 hex hashes of one-time recovery codes (XXXX-XXXX). */
+  recoveryHashes?: string[];
+};
+
+function parseTwoFactor(raw: string | null): TwoFactorStored | null {
+  if (!raw?.trim()) return null;
+  try {
+    const o = JSON.parse(raw) as Partial<TwoFactorStored>;
+    if (!o.secret || typeof o.secret !== "string") return null;
+    return {
+      enabled: Boolean(o.enabled),
+      secret: o.secret,
+      issuer: o.issuer ?? "OpsVault",
+      label: o.label ?? "account",
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+      enabledAt: o.enabledAt,
+      recoveryHashes: Array.isArray(o.recoveryHashes)
+        ? o.recoveryHashes.filter((h): h is string => typeof h === "string")
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hashRecoveryCode(code: string): string {
+  const normalized = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return createHash("sha256").update(`opsvault-2fa-rc:${normalized}`).digest("hex");
+}
+
+function generateRecoveryCodes(count = 8): string[] {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const codes: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const bytes = randomBytes(8);
+    let a = "";
+    let b = "";
+    for (let j = 0; j < 4; j++) {
+      a += alphabet[bytes[j]! % alphabet.length]!;
+      b += alphabet[bytes[j + 4]! % alphabet.length]!;
+    }
+    codes.push(`${a}-${b}`);
+  }
+  return codes;
+}
+
+function matchRecoveryCode(
+  tf: TwoFactorStored,
+  code: string
+): { ok: true; remainingHashes: string[] } | { ok: false } {
+  const h = hashRecoveryCode(code);
+  const hashes = tf.recoveryHashes ?? [];
+  const idx = hashes.indexOf(h);
+  if (idx < 0) return { ok: false };
+  const remainingHashes = hashes.filter((_, i) => i !== idx);
+  return { ok: true, remainingHashes };
+}
+
+function totpOk(tf: TwoFactorStored, code: string): boolean {
+  if (!/^\d{6}$/.test(code.replace(/\s+/g, ""))) return false;
+  return verifyTotp(
+    {
+      secret: tf.secret,
+      issuer: tf.issuer,
+      label: tf.label,
+      algorithm: tf.algorithm,
+      digits: tf.digits,
+      period: tf.period,
+    },
+    code
+  );
+}
+
+async function buildQrDataUrl(uri: string): Promise<string | null> {
+  try {
+    const QRCode = (await import("qrcode")).default;
+    return await QRCode.toDataURL(uri, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 240,
+      color: { dark: "#0f172a", light: "#ffffff" },
+    });
+  } catch {
+    return null;
+  }
+}
+
+app.get("/vault/2fa", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ enabled: false, configured: false, recoveryRemaining: 0 });
+  const tf = parseTwoFactor(store.getTwoFactorRaw(vault.id));
+  return c.json({
+    enabled: Boolean(tf?.enabled),
+    configured: Boolean(tf?.enabled && tf.secret),
+    enabledAt: tf?.enabledAt ?? null,
+    recoveryRemaining: tf?.enabled ? (tf.recoveryHashes?.length ?? 0) : 0,
+  });
+});
+
+/** Start setup: secret + otpauth + QR (not enabled until /enable). */
+app.post("/vault/2fa/setup", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const existing = parseTwoFactor(store.getTwoFactorRaw(vault.id));
+  if (existing?.enabled) {
+    return c.json({ error: "2FA already enabled — disable first" }, 400);
+  }
+  const body = await c.req
+    .json<{ label?: string }>()
+    .catch(() => ({} as { label?: string }));
+  const payload = createOtpPayload({
+    issuer: "OpsVault",
+    label: body.label?.trim() || vault.email || vault.name || "account",
+  });
+  const uri = otpauthUri(payload);
+  const pending: TwoFactorStored = {
+    enabled: false,
+    secret: payload.secret,
+    issuer: payload.issuer ?? "OpsVault",
+    label: payload.label ?? "account",
+    algorithm: "SHA1",
+    digits: 6,
+    period: 30,
+    recoveryHashes: [],
+  };
+  store.setTwoFactorRaw(vault.id, JSON.stringify(pending));
+  const qrDataUrl = await buildQrDataUrl(uri);
+  return c.json({
+    secret: pending.secret,
+    otpauthUri: uri,
+    qrDataUrl,
+    issuer: pending.issuer,
+    label: pending.label,
+  });
+});
+
+/** Confirm setup with TOTP → enable + return one-time recovery codes. */
+app.post("/vault/2fa/enable", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{ code?: string }>();
+  const code = body?.code?.replace(/\s+/g, "") ?? "";
+  if (!/^\d{6}$/.test(code)) {
+    return c.json({ error: "Enter the 6-digit code from your app" }, 400);
+  }
+  const tf = parseTwoFactor(store.getTwoFactorRaw(vault.id));
+  if (!tf?.secret) {
+    return c.json({ error: "Start setup first (POST /vault/2fa/setup)" }, 400);
+  }
+  if (!totpOk(tf, code)) {
+    return c.json({ error: "Invalid code — try the next one" }, 400);
+  }
+  const recoveryCodes = generateRecoveryCodes(8);
+  const enabled: TwoFactorStored = {
+    ...tf,
+    enabled: true,
+    enabledAt: new Date().toISOString(),
+    recoveryHashes: recoveryCodes.map(hashRecoveryCode),
+  };
+  store.setTwoFactorRaw(vault.id, JSON.stringify(enabled));
+  audit(c, "vault.rekey", `2fa.enable:${vault.id}`);
+  return c.json({
+    enabled: true,
+    recoveryCodes,
+    recoveryNote:
+      "Save these codes now. Each works once to unlock or disable 2FA if you lose your authenticator.",
+  });
+});
+
+/**
+ * Disable 2FA with a recovery code (preferred when phone is lost)
+ * or a current TOTP code.
+ */
+app.post("/vault/2fa/disable", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{ code?: string; recoveryCode?: string }>();
+  const recoveryCode = (body?.recoveryCode ?? body?.code ?? "").trim();
+  const totpCode = (body?.code ?? "").replace(/\s+/g, "");
+  const tf = parseTwoFactor(store.getTwoFactorRaw(vault.id));
+  if (!tf?.enabled) {
+    store.setTwoFactorRaw(vault.id, null);
+    return c.json({ enabled: false });
+  }
+
+  // Prefer recovery-code path when value looks like XXXX-XXXX / long alnum
+  const looksLikeRecovery =
+    recoveryCode.includes("-") ||
+    recoveryCode.replace(/[^A-Za-z0-9]/g, "").length >= 8;
+
+  if (looksLikeRecovery) {
+    const match = matchRecoveryCode(tf, recoveryCode);
+    if (!match.ok) {
+      return c.json(
+        {
+          error:
+            "Invalid recovery code. Use one of the codes shown when you enabled 2FA.",
+        },
+        400
+      );
+    }
+    store.setTwoFactorRaw(vault.id, null);
+    audit(c, "vault.rekey", `2fa.disable:recovery:${vault.id}`);
+    return c.json({ enabled: false, usedRecovery: true });
+  }
+
+  if (!totpOk(tf, totpCode)) {
+    return c.json(
+      {
+        error:
+          "Invalid code. Enter a recovery code (XXXX-XXXX) or a 6-digit authenticator code.",
+      },
+      400
+    );
+  }
+  store.setTwoFactorRaw(vault.id, null);
+  audit(c, "vault.rekey", `2fa.disable:totp:${vault.id}`);
+  return c.json({ enabled: false, usedRecovery: false });
+});
+
+/** Verify TOTP or recovery code after master password (unlock gate). */
+app.post("/vault/2fa/verify", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{ code?: string; recoveryCode?: string }>();
+  const raw = (body?.recoveryCode ?? body?.code ?? "").trim();
+  const tf = parseTwoFactor(store.getTwoFactorRaw(vault.id));
+  if (!tf?.enabled) {
+    return c.json({ ok: true, required: false });
+  }
+  if (!raw) {
+    return c.json(
+      { error: "Enter authenticator code or a recovery code" },
+      400
+    );
+  }
+
+  const digits = raw.replace(/\s+/g, "");
+  if (/^\d{6}$/.test(digits) && totpOk(tf, digits)) {
+    audit(c, "vault.unlock.ok", `2fa:totp:${vault.id}`);
+    return c.json({ ok: true, required: true, usedRecovery: false });
+  }
+
+  const match = matchRecoveryCode(tf, raw);
+  if (match.ok) {
+    // consume recovery code
+    store.setTwoFactorRaw(
+      vault.id,
+      JSON.stringify({ ...tf, recoveryHashes: match.remainingHashes })
+    );
+    audit(c, "vault.unlock.ok", `2fa:recovery:${vault.id}`);
+    return c.json({
+      ok: true,
+      required: true,
+      usedRecovery: true,
+      recoveryRemaining: match.remainingHashes.length,
+    });
+  }
+
+  audit(c, "vault.unlock.fail", `2fa:${vault.id}`);
+  return c.json(
+    {
+      error:
+        "Invalid code. Use your authenticator app or a one-time recovery code.",
+    },
+    400
+  );
 });
 
 /** Prefer OPS_VAULT_API_PORT (default 8790) to avoid OpsGate on 8787. */

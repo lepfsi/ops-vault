@@ -1,18 +1,12 @@
 /**
  * SMTP mailer for share notifications.
  *
- * Resolution order for config:
- *   1. Per-vault settings (UI → vault_settings.smtp_json)
- *   2. Environment variables (OPS_VAULT_SMTP_*)
- *
- * Env (fallback):
- *   OPS_VAULT_SMTP_HOST
- *   OPS_VAULT_SMTP_PORT (default 587)
- *   OPS_VAULT_SMTP_USER
- *   OPS_VAULT_SMTP_PASS
- *   OPS_VAULT_SMTP_FROM (default OPS_VAULT_SMTP_USER)
- *   OPS_VAULT_SMTP_SECURE=true for port 465
+ * Resolution order:
+ *   1. Per-vault settings (Settings → Mail → vault_settings.smtp_json)
+ *   2. Environment OPS_VAULT_SMTP_*
  */
+
+import nodemailer from "nodemailer";
 
 export type SmtpConfig = {
   host: string;
@@ -44,10 +38,12 @@ export function parseSmtpJson(raw: string | null | undefined): SmtpConfig | null
     const o = JSON.parse(raw) as Partial<SmtpConfig>;
     if (!o.host?.trim()) return null;
     const port = Number(o.port ?? 587);
+    const secure =
+      o.secure != null ? Boolean(o.secure) : port === 465;
     return {
       host: String(o.host).trim(),
       port: Number.isFinite(port) ? port : 587,
-      secure: Boolean(o.secure) || port === 465,
+      secure,
       user: String(o.user ?? ""),
       pass: String(o.pass ?? ""),
       from: String(o.from ?? o.user ?? "").trim(),
@@ -79,7 +75,6 @@ export function envSmtpConfig(): SmtpConfig | null {
   };
 }
 
-/** Prefer vault UI config, then env. */
 export function resolveSmtp(
   vaultSmtpJson?: string | null
 ): { config: SmtpConfig; source: "vault" | "env" } | null {
@@ -87,9 +82,37 @@ export function resolveSmtp(
   if (fromVault?.enabled && fromVault.host) {
     return { config: fromVault, source: "vault" };
   }
+  // Vault row exists but disabled/incomplete → still try env
   const fromEnv = envSmtpConfig();
   if (fromEnv) return { config: fromEnv, source: "env" };
   return null;
+}
+
+function transportOptions(config: SmtpConfig): Record<string, unknown> {
+  const port = config.port || 587;
+  // 465 = implicit TLS (secure:true). 587/25 = STARTTLS (secure:false).
+  const secure = Boolean(config.secure) || port === 465;
+  const opts: Record<string, unknown> = {
+    host: config.host,
+    port,
+    secure,
+    connectionTimeout: 20_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 25_000,
+  };
+  if (config.user) {
+    opts.auth = { user: config.user, pass: config.pass };
+  }
+  // Port 587: STARTTLS (do not set secure:true — that breaks many providers)
+  if (!secure && (port === 587 || port === 25)) {
+    opts.requireTLS = true;
+  }
+  opts.tls = {
+    minVersion: "TLSv1.2",
+    // Set OPS_VAULT_SMTP_TLS_INSECURE=true only for self-signed lab certs
+    rejectUnauthorized: process.env.OPS_VAULT_SMTP_TLS_INSECURE !== "true",
+  };
+  return opts;
 }
 
 /**
@@ -109,13 +132,20 @@ export async function sendShareEmail(
     return {
       sent: false,
       reason:
-        "SMTP not configured. Open Settings → Mail and enter your SMTP server, or set OPS_VAULT_SMTP_HOST on the API.",
+        "SMTP not configured. Open Settings → Mail, enable SMTP and save host/user/password, or set OPS_VAULT_SMTP_HOST on the API process.",
     };
   }
 
-  const { config } = resolved;
+  const { config, source } = resolved;
   if (!config.host) {
     return { sent: false, reason: "SMTP host is empty" };
+  }
+  if (config.user && !config.pass) {
+    return {
+      sent: false,
+      reason:
+        "SMTP password is empty. Re-save Settings → Mail and enter the password (it is never shown back).",
+    };
   }
 
   const exp = input.expiresAt
@@ -144,32 +174,69 @@ export async function sendShareEmail(
     `— OpsVault / DailyOps`,
   ].join("\n");
 
+  const html = `
+    <p>You received an ephemeral secret share from <strong>OpsVault</strong>.</p>
+    <ul>
+      <li><strong>Title:</strong> ${escapeHtml(input.title)}</li>
+      <li><strong>Scope:</strong> ${escapeHtml(input.scope)}</li>
+      <li><strong>Expires:</strong> ${escapeHtml(exp)}</li>
+      <li><strong>Views:</strong> ${escapeHtml(views)}</li>
+    </ul>
+    <p><a href="${escapeHtml(input.claimUrl)}">Open share link</a></p>
+    <p>Share password: <code>${escapeHtml(input.sharePassword)}</code></p>
+    <p style="color:#666;font-size:12px">Time- and/or view-limited. Do not forward carelessly.</p>
+  `;
+
   try {
-    const nodemailer = await import("nodemailer");
-    const transporter = nodemailer.createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-      auth: config.user ? { user: config.user, pass: config.pass } : undefined,
-    });
+    const transporter = nodemailer.createTransport(
+      transportOptions(config) as Parameters<typeof nodemailer.createTransport>[0]
+    );
+    // Verify connection first — clearer errors than sendMail alone
+    try {
+      await transporter.verify();
+    } catch (verifyErr) {
+      const vmsg =
+        verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
+      return {
+        sent: false,
+        reason: `SMTP connect failed (${source} config · ${config.host}:${config.port}): ${vmsg}`,
+      };
+    }
+
     await transporter.sendMail({
       from: config.from || config.user || "opsvault@localhost",
       to,
       subject,
       text,
+      html,
     });
     return { sent: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : "SMTP send failed";
-    if (msg.includes("Cannot find package") || msg.includes("MODULE_NOT_FOUND")) {
+    if (
+      msg.includes("Cannot find package") ||
+      msg.includes("MODULE_NOT_FOUND") ||
+      msg.includes("Cannot find module")
+    ) {
       return {
         sent: false,
         reason:
-          "nodemailer not installed. From apps/api run: pnpm add nodemailer",
+          "nodemailer module missing. From monorepo root run: pnpm install  (or pnpm --filter @ops-vault/api add nodemailer)",
       };
     }
-    return { sent: false, reason: msg };
+    return {
+      sent: false,
+      reason: `SMTP send failed (${source} · ${config.host}:${config.port}): ${msg}`,
+    };
   }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 export function mailStatus(vaultSmtpJson?: string | null): {
@@ -211,7 +278,6 @@ export function mailStatus(vaultSmtpJson?: string | null): {
   };
 }
 
-/** Public shape for GET settings (never returns password). */
 export function smtpPublicFromRaw(raw: string | null | undefined): {
   enabled: boolean;
   host: string;
