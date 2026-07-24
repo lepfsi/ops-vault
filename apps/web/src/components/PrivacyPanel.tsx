@@ -146,7 +146,10 @@ export function PrivacyPanel({ vault, onError }: Props) {
         </Button>
       </div>
 
-      <div className="space-y-3 rounded-xl border-2 border-[var(--ov-accent)]/40 bg-[var(--ov-accent-soft)] p-5">
+      <div
+        id="privacy-breach-check"
+        className="space-y-3 rounded-xl border-2 border-[var(--ov-accent)]/40 bg-[var(--ov-accent-soft)] p-5"
+      >
         <h3 className="text-base font-semibold text-[var(--ov-fg)]">
           Breach check (HIBP)
         </h3>

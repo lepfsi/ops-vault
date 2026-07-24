@@ -4,6 +4,7 @@ import { AccountPanel } from "./AccountPanel";
 import { BackupPanel } from "./BackupPanel";
 import { PrivacyPanel } from "./PrivacyPanel";
 import { SecurityPanel } from "./SecurityPanel";
+import { SmtpPanel } from "./SmtpPanel";
 import type { SettingsTab } from "./layout/AppShell";
 
 interface Props {
@@ -15,6 +16,10 @@ interface Props {
   onRecoveryUpdated: () => void;
   onRekeyed: (key: MasterKey) => void;
   onError: (msg: string) => void;
+  onVaultDeleted?: () => void;
+  activeOrgId?: string | null;
+  activeOrgName?: string | null;
+  onOrgDeleted?: () => void;
 }
 
 export function SettingsView({
@@ -26,6 +31,10 @@ export function SettingsView({
   onRecoveryUpdated,
   onRekeyed,
   onError,
+  onVaultDeleted,
+  activeOrgId,
+  activeOrgName,
+  onOrgDeleted,
 }: Props) {
   const effective: SettingsTab =
     tab === "workspace" ? "account" : tab;
@@ -40,6 +49,7 @@ export function SettingsView({
           { id: "account", label: "Account" },
           { id: "security", label: "Security" },
           { id: "privacy", label: "Privacy" },
+          { id: "mail", label: "Mail" },
           { id: "backup", label: "Backup" },
           { id: "about", label: "About" },
         ]}
@@ -52,6 +62,10 @@ export function SettingsView({
             masterKey={masterKey}
             onUpdated={onRecoveryUpdated}
             onError={onError}
+            onVaultDeleted={onVaultDeleted}
+            activeOrgId={activeOrgId}
+            activeOrgName={activeOrgName}
+            onOrgDeleted={onOrgDeleted}
           />
         )}
 
@@ -76,6 +90,8 @@ export function SettingsView({
         {effective === "privacy" && (
           <PrivacyPanel vault={vault} onError={onError} />
         )}
+
+        {effective === "mail" && <SmtpPanel onError={onError} />}
 
         {effective === "about" && (
           <div className="space-y-4 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-panel)] p-6 text-sm text-[var(--ov-muted)]">

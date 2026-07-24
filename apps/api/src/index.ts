@@ -12,7 +12,15 @@ import { VaultStore, type AuditAction } from "@ops-vault/db";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Context } from "hono";
+import {
+  mailStatus,
+  parseSmtpJson,
+  sendShareEmail,
+  smtpPublicFromRaw,
+} from "./mail.js";
 
+// Keep DB under OPS_VAULT_DATA (default ./data). Watcher must ignore this dir
+// (see package.json dev script) — SQLite writes must not restart the API.
 const dataDir = resolve(process.env.OPS_VAULT_DATA ?? "./data");
 mkdirSync(dataDir, { recursive: true });
 const dbPath = resolve(dataDir, "ops-vault.db");
@@ -68,7 +76,22 @@ const corsOrigins = [
     .filter(Boolean) ?? []),
 ];
 
-app.use("*", logger());
+// Quiet logger: skip OPTIONS, health, and high-frequency list GETs
+// (SecretList polls secrets/folders/tags; logging them floods the terminal).
+const QUIET_GET = new Set([
+  "/health",
+  "/secrets",
+  "/folders",
+  "/tags",
+  "/workspaces",
+  "/mail/status",
+]);
+const requestLog = logger();
+app.use("*", async (c, next) => {
+  if (c.req.method === "OPTIONS") return next();
+  if (c.req.method === "GET" && QUIET_GET.has(c.req.path)) return next();
+  return requestLog(c, next);
+});
 app.use(
   "*",
   cors({
@@ -224,10 +247,29 @@ app.post("/vaults", async (c) => {
 
 app.delete("/vaults/:id", (c) => {
   const id = c.req.param("id");
+  const active = vaultIdFrom(c);
+  if (active && active !== id) {
+    return c.json({ error: "Can only delete the active vault" }, 403);
+  }
   const ok = store.deleteVault(id);
   if (!ok) return c.json({ error: "Not found" }, 404);
   audit(c, "vault.create", `deleted:${id}`);
   return c.json({ ok: true });
+});
+
+app.delete("/workspaces/:id", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  try {
+    const ok = store.deleteWorkspace(c.req.param("id"), vault.id);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Delete failed" },
+      403
+    );
+  }
 });
 
 // Compat: single-vault style endpoints (active vault via header)
@@ -420,7 +462,7 @@ app.get("/secrets", (c) => {
   const vault = store.resolveVault(vaultIdFrom(c));
   if (!vault) return c.json({ items: [] });
   const workspaceId = c.req.query("workspaceId") || null;
-  audit(c, "secret.list", workspaceId ? `org:${workspaceId}` : vault.id);
+  // No audit on list — high frequency + would thrash tsx watch if DB dir is watched
   return c.json({
     items: store.listSecrets(vault.id, { workspaceId }),
   });
@@ -691,6 +733,114 @@ app.get("/shares", (c) => {
   return c.json({ shares: store.listSecretShares(vault.id) });
 });
 
+app.get("/mail/status", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  const raw = vault ? store.getSmtpConfigRaw(vault.id) : null;
+  return c.json(mailStatus(raw));
+});
+
+/** Per-vault SMTP (UI). Password never returned; omit pass on PUT to keep existing. */
+app.get("/settings/smtp", (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const raw = store.getSmtpConfigRaw(vault.id);
+  const env = mailStatus(null);
+  return c.json({
+    smtp: smtpPublicFromRaw(raw),
+    envFallback: {
+      configured: env.configured,
+      host: env.host,
+      from: env.from,
+    },
+  });
+});
+
+app.put("/settings/smtp", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{
+    enabled?: boolean;
+    host?: string;
+    port?: number;
+    secure?: boolean;
+    user?: string;
+    pass?: string;
+    from?: string;
+    clear?: boolean;
+  }>();
+
+  if (body.clear) {
+    store.setSmtpConfigRaw(vault.id, null);
+    return c.json({ ok: true, smtp: smtpPublicFromRaw(null) });
+  }
+
+  const existing = parseSmtpJson(store.getSmtpConfigRaw(vault.id));
+  const host = (body.host ?? existing?.host ?? "").trim();
+  const port = Number(body.port ?? existing?.port ?? 587);
+  const user = body.user ?? existing?.user ?? "";
+  // Keep previous password when client sends empty pass (masked field)
+  const pass =
+    body.pass != null && body.pass.length > 0
+      ? body.pass
+      : (existing?.pass ?? "");
+  const from = (body.from ?? existing?.from ?? user ?? "").trim();
+  const secure =
+    body.secure != null
+      ? Boolean(body.secure)
+      : existing?.secure ?? port === 465;
+  const enabled = body.enabled != null ? Boolean(body.enabled) : true;
+
+  if (enabled && !host) {
+    return c.json({ error: "SMTP host is required when enabled" }, 400);
+  }
+
+  const json = JSON.stringify({
+    enabled,
+    host,
+    port: Number.isFinite(port) ? port : 587,
+    secure,
+    user,
+    pass,
+    from,
+  });
+  store.setSmtpConfigRaw(vault.id, json);
+  return c.json({ ok: true, smtp: smtpPublicFromRaw(json) });
+});
+
+app.post("/settings/smtp/test", async (c) => {
+  const vault = store.resolveVault(vaultIdFrom(c));
+  if (!vault) return c.json({ error: "No vault" }, 400);
+  const body = await c.req.json<{ to?: string }>().catch(() => ({} as { to?: string }));
+  const to =
+    body.to?.trim() ||
+    vault.email ||
+    vault.recoveryEmail ||
+    "";
+  if (!to || !to.includes("@")) {
+    return c.json(
+      { error: "Provide a recipient email (to) or set account email" },
+      400
+    );
+  }
+  const raw = store.getSmtpConfigRaw(vault.id);
+  const result = await sendShareEmail(
+    {
+      to,
+      title: "SMTP test",
+      claimUrl: "https://example.invalid/ops-vault-smtp-test",
+      sharePassword: "(test — no real share)",
+      scope: "external",
+      expiresAt: null,
+      maxViews: 1,
+    },
+    raw
+  );
+  if (!result.sent) {
+    return c.json({ sent: false, error: result.reason, reason: result.reason }, 422);
+  }
+  return c.json({ sent: true, to });
+});
+
 app.post("/shares", async (c) => {
   const body = await c.req.json<{
     secretId?: string | null;
@@ -710,6 +860,47 @@ app.post("/shares", async (c) => {
   }
   const share = store.createSecretShare(body);
   return c.json({ share }, 201);
+});
+
+/** Email claim link (+ password) to a recipient after share creation. */
+app.post("/shares/notify", async (c) => {
+  const body = await c.req.json<{
+    to: string;
+    title: string;
+    claimUrl: string;
+    sharePassword: string;
+    scope?: string;
+    expiresAt?: string | null;
+    maxViews?: number | null;
+  }>();
+  if (!body?.to || !body?.claimUrl || !body?.sharePassword || !body?.title) {
+    return c.json(
+      { error: "to, title, claimUrl and sharePassword are required" },
+      400
+    );
+  }
+  const vault = store.resolveVault(vaultIdFrom(c));
+  const smtpRaw = vault ? store.getSmtpConfigRaw(vault.id) : null;
+  const result = await sendShareEmail(
+    {
+      to: body.to,
+      title: body.title,
+      claimUrl: body.claimUrl,
+      sharePassword: body.sharePassword,
+      scope: body.scope ?? "external",
+      expiresAt: body.expiresAt,
+      maxViews: body.maxViews,
+    },
+    smtpRaw
+  );
+  if (!result.sent) {
+    // 422: share was created client-side; only delivery failed — not a proxy outage
+    return c.json(
+      { sent: false, reason: result.reason, error: result.reason },
+      422
+    );
+  }
+  return c.json({ sent: true });
 });
 
 /** Claim share by access token (enforces TTL + max views). */
@@ -767,8 +958,7 @@ const port = Number(
   process.env.OPS_VAULT_API_PORT ?? process.env.PORT ?? 8790
 );
 
-console.log(`ops-vault api listening on http://localhost:${port}`);
-console.log(`CORS origins: ${corsOrigins.join(", ")}`);
+console.log(`ops-vault api · http://localhost:${port} · db ${dbPath}`);
 
 serve({
   fetch: app.fetch,

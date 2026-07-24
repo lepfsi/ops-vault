@@ -2,8 +2,10 @@
   "name": "ops-vault",
   "private": true,
   "scripts": {
+    "predev": "pnpm --filter @ops-vault/core build && pnpm --filter @ops-vault/db build",
     "dev": "turbo dev --filter=@ops-vault/api --filter=@ops-vault/web",
-    "dev:api": "pnpm --filter @ops-vault/api dev",
+    "dev:api": "pnpm --filter @ops-vault/db build && pnpm --filter @ops-vault/api dev",
+    "dev:api:watch": "pnpm --filter @ops-vault/db build && pnpm --filter @ops-vault/api dev:watch",
     "dev:web": "pnpm --filter @ops-vault/web dev",
     "build": "turbo build",
     "lint": "turbo lint",
@@ -16,5 +18,8 @@
   "packageManager": "pnpm@10.12.4",
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "nodemailer": "^7.0.13"
   }
 }

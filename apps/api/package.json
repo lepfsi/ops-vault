@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx src/index.ts",
+    "dev:watch": "tsx watch --exclude \"./data/**\" --exclude \"**/*.db\" --exclude \"**/*.db-*\" src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
@@ -14,10 +15,12 @@
     "@hono/node-server": "^1.14.4",
     "@ops-vault/core": "workspace:*",
     "@ops-vault/db": "workspace:*",
-    "hono": "^4.8.4"
+    "hono": "^4.8.4",
+    "nodemailer": "^7.0.5"
   },
   "devDependencies": {
     "@types/node": "^22.15.32",
+    "@types/nodemailer": "^6.4.17",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   },

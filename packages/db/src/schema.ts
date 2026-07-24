@@ -110,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_shares_vault ON secret_shares(vault_id);
 CREATE TABLE IF NOT EXISTS vault_settings (
   vault_id TEXT PRIMARY KEY NOT NULL,
   password_policy_json TEXT,
+  smtp_json TEXT,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
 );

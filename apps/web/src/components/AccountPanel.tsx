@@ -6,12 +6,17 @@ import {
 import { Button, Input } from "@ops-vault/ui";
 import { useState, type FormEvent } from "react";
 import * as api from "../lib/api";
+import { DangerZone } from "./DangerZone";
 
 interface Props {
   vault: VaultRecordWithRecovery;
   masterKey: MasterKey;
   onUpdated: () => void;
   onError: (msg: string) => void;
+  onVaultDeleted?: () => void;
+  activeOrgId?: string | null;
+  activeOrgName?: string | null;
+  onOrgDeleted?: () => void;
 }
 
 export function AccountPanel({
@@ -19,6 +24,10 @@ export function AccountPanel({
   masterKey,
   onUpdated,
   onError,
+  onVaultDeleted,
+  activeOrgId,
+  activeOrgName,
+  onOrgDeleted,
 }: Props) {
   const [email, setEmail] = useState(vault.email ?? "");
   const [recoveryEmail, setRecoveryEmail] = useState(
@@ -129,6 +138,16 @@ export function AccountPanel({
       {info && (
         <p className="text-sm text-emerald-600 dark:text-emerald-400">{info}</p>
       )}
+
+      <DangerZone
+        vaultId={vault.id}
+        vaultName={vault.name}
+        orgId={activeOrgId}
+        orgName={activeOrgName}
+        onError={onError}
+        onVaultDeleted={() => onVaultDeleted?.()}
+        onOrgDeleted={() => onOrgDeleted?.()}
+      />
     </div>
   );
 }

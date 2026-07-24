@@ -1,6 +1,6 @@
 import type { SecretMeta } from "@ops-vault/core";
 import { Badge, cn, DomainIcon, IconExternal } from "@ops-vault/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { TYPE_META, type VaultFilter } from "../lib/secretMeta";
 import { displayHost, toBrowseUrl } from "../lib/url";
@@ -42,6 +42,15 @@ export function SecretList({
   const [folderNames, setFolderNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
 
+  // Keep parent callbacks out of load() deps — unstable inline handlers
+  // (e.g. onError={() => undefined}) previously caused infinite re-fetch loops.
+  const onErrorRef = useRef(onError);
+  const onCountsRef = useRef(onCounts);
+  const onMetaRef = useRef(onMeta);
+  onErrorRef.current = onError;
+  onCountsRef.current = onCounts;
+  onMetaRef.current = onMeta;
+
   const load = useCallback(async () => {
     try {
       setLoading(true);
@@ -68,8 +77,8 @@ export function SecretList({
       for (const it of list) {
         counts[it.type] = (counts[it.type] ?? 0) + 1;
       }
-      onCounts?.(counts);
-      onMeta?.({
+      onCountsRef.current?.(counts);
+      onMetaRef.current?.({
         folders: folders.map((f) => ({
           id: f.id,
           name: f.name,
@@ -78,11 +87,13 @@ export function SecretList({
         tags,
       });
     } catch (err) {
-      onError(err instanceof Error ? err.message : "List failed");
+      onErrorRef.current(
+        err instanceof Error ? err.message : "List failed"
+      );
     } finally {
       setLoading(false);
     }
-  }, [onCounts, onError, onMeta, workspaceId]);
+  }, [workspaceId]);
 
   useEffect(() => {
     void load();

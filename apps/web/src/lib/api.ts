@@ -42,23 +42,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch {
     throw new Error(
-      "API unreachable. Run pnpm dev:api (default port 8790) or set OPS_VAULT_API_PORT."
+      "API unreachable. From monorepo root run: pnpm dev  (or pnpm dev:api). Default API port 8790 — set OPS_VAULT_API_PORT if needed."
     );
   }
 
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  const data = (await res.json().catch(() => ({}))) as T & {
+    error?: string;
+    reason?: string;
+  };
   if (!res.ok) {
+    const apiMsg = data.error ?? data.reason;
     // Vite proxy often returns 500 HTML when upstream is down
     if (res.status === 500 || res.status === 502 || res.status === 504) {
-      const maybeMsg = (data as { error?: string }).error;
       throw new Error(
-        maybeMsg ??
-          "API proxy failed. Check OPS_VAULT_API_PORT (default 8790)."
+        apiMsg ??
+          "API proxy failed (502/504). Restart API: pnpm dev:api — after db changes also: pnpm --filter @ops-vault/db build"
       );
     }
-    throw new Error(
-      (data as { error?: string }).error ?? `HTTP ${res.status}`
-    );
+    throw new Error(apiMsg ?? `HTTP ${res.status}`);
   }
   return data;
 }
@@ -149,6 +150,16 @@ export async function createVault(body: {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function deleteVault(id: string): Promise<{ ok: boolean }> {
+  return request(`/vaults/${id}`, { method: "DELETE" });
+}
+
+export async function deleteWorkspace(
+  workspaceId: string
+): Promise<{ ok: boolean }> {
+  return request(`/workspaces/${workspaceId}`, { method: "DELETE" });
 }
 
 export async function setRecovery(body: {
@@ -431,9 +442,84 @@ export async function createShare(body: {
   });
 }
 
+export async function notifyShareEmail(body: {
+  to: string;
+  title: string;
+  claimUrl: string;
+  sharePassword: string;
+  scope?: string;
+  expiresAt?: string | null;
+  maxViews?: number | null;
+}): Promise<{ sent: boolean; reason?: string }> {
+  return request("/shares/notify", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getMailStatus(): Promise<{
+  configured: boolean;
+  source?: "vault" | "env" | null;
+  host: string | null;
+  from: string | null;
+  port?: number | null;
+  hasPassword?: boolean;
+}> {
+  return request("/mail/status");
+}
+
+export type SmtpPublic = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  from: string;
+  hasPassword: boolean;
+};
+
+export async function getSmtpSettings(): Promise<{
+  smtp: SmtpPublic;
+  envFallback: {
+    configured: boolean;
+    host: string | null;
+    from: string | null;
+  };
+}> {
+  return request("/settings/smtp");
+}
+
+export async function putSmtpSettings(body: {
+  enabled?: boolean;
+  host?: string;
+  port?: number;
+  secure?: boolean;
+  user?: string;
+  pass?: string;
+  from?: string;
+  clear?: boolean;
+}): Promise<{ ok: boolean; smtp: SmtpPublic }> {
+  return request("/settings/smtp", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function testSmtp(to?: string): Promise<{
+  sent: boolean;
+  to?: string;
+  reason?: string;
+}> {
+  return request("/settings/smtp/test", {
+    method: "POST",
+    body: JSON.stringify({ to: to || undefined }),
+  });
+}
+
 export async function listShares(): Promise<{
   shares: Array<{
     id: string;
+    secretId?: string | null;
     scope: string;
     title: string;
     type: string;
@@ -447,6 +533,10 @@ export async function listShares(): Promise<{
   }>;
 }> {
   return request("/shares");
+}
+
+export async function deleteShare(id: string): Promise<{ ok: boolean }> {
+  return request(`/shares/${id}`, { method: "DELETE" });
 }
 
 export async function claimShare(token: string): Promise<{

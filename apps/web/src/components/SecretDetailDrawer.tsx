@@ -41,6 +41,8 @@ interface Props {
   secret: SecretMeta | null;
   masterKey: MasterKey;
   orgKey?: MasterKey | null;
+  /** Active org id when sharing internally to workspace */
+  workspaceId?: string | null;
   folders?: { id: string; name: string }[];
   onClose: () => void;
   onDeleted: () => void;
@@ -53,6 +55,7 @@ export function SecretDetailDrawer({
   secret,
   masterKey,
   orgKey = null,
+  workspaceId = null,
   folders = [],
   onClose,
   onDeleted,
@@ -66,11 +69,26 @@ export function SecretDetailDrawer({
   const [showKey, setShowKey] = useState(false);
   const [showGen, setShowGen] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [shareScope, setShareScope] = useState<"external" | "workspace">(
+    "external"
+  );
   const [sharePass, setSharePass] = useState("");
   const [shareEmail, setShareEmail] = useState("");
   const [shareTtl, setShareTtl] = useState<string>("24h");
   const [shareViews, setShareViews] = useState<string>("5");
   const [lastShareLink, setLastShareLink] = useState<string | null>(null);
+  const [activeShares, setActiveShares] = useState<
+    Array<{
+      id: string;
+      scope: string;
+      expiresAt: string | null;
+      maxViews: number | null;
+      viewCount: number;
+      status: string;
+      accessToken: string | null;
+      recipientEmail: string | null;
+    }>
+  >([]);
   const [otp, setOtp] = useState<{ code: string; remaining: number } | null>(
     null
   );
@@ -280,8 +298,40 @@ export function SecretDetailDrawer({
     }
   }
 
-  async function shareExternal() {
+  async function loadShares() {
+    if (!secret) return;
+    try {
+      const { shares } = await api.listShares();
+      setActiveShares(
+        shares.filter(
+          (s) =>
+            s.status === "active" &&
+            (s.title === secret.title ||
+              /* best-effort match by secret when API returns secretId */
+              true)
+        ).filter((s) => {
+          // Prefer secretId when present in list payload
+          const any = s as { secretId?: string | null };
+          if (any.secretId) return any.secretId === secret.id;
+          return s.title === secret.title;
+        })
+      );
+    } catch {
+      setActiveShares([]);
+    }
+  }
+
+  useEffect(() => {
+    if (open && sharing && secret) void loadShares();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, sharing, secret?.id]);
+
+  async function createEphemeralShare() {
     if (!secret || !payload) return;
+    if (shareScope === "workspace" && !workspaceId) {
+      onError("Open an organization vault to share internally");
+      return;
+    }
     setBusy(true);
     try {
       const ttl = SHARE_TTL_PRESETS.find((t) => t.id === shareTtl);
@@ -291,7 +341,12 @@ export function SecretDetailDrawer({
         type: secret.type,
         payload,
         sharePassword: sharePass,
-        note: shareEmail ? `Pour ${shareEmail}` : undefined,
+        note:
+          shareScope === "workspace"
+            ? `Internal org share${shareEmail ? ` · ${shareEmail}` : ""}`
+            : shareEmail
+              ? `For ${shareEmail}`
+              : undefined,
         limits: {
           expiresInMs: ttl?.ms ?? null,
           maxViews: views?.views ?? null,
@@ -302,7 +357,8 @@ export function SecretDetailDrawer({
       const { share } = await api.createShare({
         secretId: secret.id,
         vaultId,
-        scope: "external",
+        workspaceId: shareScope === "workspace" ? workspaceId : null,
+        scope: shareScope,
         title: secret.title,
         type: secret.type,
         packageJson: JSON.stringify(pkg),
@@ -317,15 +373,18 @@ export function SecretDetailDrawer({
       } catch {
         /* ignore */
       }
-      const blob = new Blob([JSON.stringify(pkg, null, 2)], {
-        type: "application/json",
-      });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `opsvault-share-${secret.title.replace(/\s+/g, "-")}.json`;
-      a.click();
-      URL.revokeObjectURL(a.href);
+      if (shareScope === "external") {
+        const blob = new Blob([JSON.stringify(pkg, null, 2)], {
+          type: "application/json",
+        });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `opsvault-share-${secret.title.replace(/\s+/g, "-")}.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
       setSharePass("");
+      await loadShares();
       onUpdated();
     } catch (err) {
       onError(err instanceof Error ? err.message : "Share failed");
@@ -398,7 +457,7 @@ export function SecretDetailDrawer({
                     setEditing(false);
                   }}
                 >
-                  Share
+                  Quick share
                 </Button>
                 <Button
                   type="button"
@@ -934,26 +993,66 @@ export function SecretDetailDrawer({
 
         {sharing && !editing && (
           <div className="space-y-3 rounded-xl border border-[var(--ov-border)] bg-[var(--ov-soft)] p-4">
-            <p className="text-sm font-medium">Share</p>
+            <p className="text-sm font-medium">Ephemeral share</p>
+            <p className="text-xs text-[var(--ov-muted)]">
+              Time-limited and/or view-limited link. Works outside and inside
+              the org.
+            </p>
+
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-[var(--ov-panel)] p-1">
+              <button
+                type="button"
+                onClick={() => setShareScope("external")}
+                className={`rounded-md px-2 py-1.5 text-xs font-medium ${
+                  shareScope === "external"
+                    ? "bg-[var(--ov-accent-soft)] text-[var(--ov-accent)]"
+                    : "text-[var(--ov-muted)]"
+                }`}
+              >
+                External
+              </button>
+              <button
+                type="button"
+                onClick={() => setShareScope("workspace")}
+                disabled={!workspaceId}
+                className={`rounded-md px-2 py-1.5 text-xs font-medium disabled:opacity-40 ${
+                  shareScope === "workspace"
+                    ? "bg-[var(--ov-accent-soft)] text-[var(--ov-accent)]"
+                    : "text-[var(--ov-muted)]"
+                }`}
+                title={
+                  workspaceId
+                    ? "Share inside organization"
+                    : "Enter an org vault first"
+                }
+              >
+                Internal (org)
+              </button>
+            </div>
+
             <input
-              className="w-full rounded-lg border border-[var(--ov-border)] bg-[var(--ov-input)] px-3 py-2 text-sm"
-              placeholder="Recipient email (optional)"
+              className={field}
+              placeholder={
+                shareScope === "workspace"
+                  ? "Colleague note / email (optional)"
+                  : "Recipient email (optional)"
+              }
               value={shareEmail}
               onChange={(e) => setShareEmail(e.target.value)}
             />
             <input
               type="password"
-              className="w-full rounded-lg border border-[var(--ov-border)] bg-[var(--ov-input)] px-3 py-2 text-sm"
-              placeholder="Mot de passe de partage (≥8)"
+              className={field}
+              placeholder="Share password (≥8) — sent separately"
               value={sharePass}
               onChange={(e) => setSharePass(e.target.value)}
               minLength={8}
             />
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="block text-xs text-[var(--ov-muted)]">
-                Expiration
+                Expires after
                 <select
-                  className="mt-1 w-full rounded-lg border border-[var(--ov-border)] bg-[var(--ov-input)] px-2 py-2 text-sm text-[var(--ov-fg)]"
+                  className={`mt-1 ${field}`}
                   value={shareTtl}
                   onChange={(e) => setShareTtl(e.target.value)}
                 >
@@ -965,9 +1064,9 @@ export function SecretDetailDrawer({
                 </select>
               </label>
               <label className="block text-xs text-[var(--ov-muted)]">
-                Nombre de vues
+                Max views
                 <select
-                  className="mt-1 w-full rounded-lg border border-[var(--ov-border)] bg-[var(--ov-input)] px-2 py-2 text-sm text-[var(--ov-fg)]"
+                  className={`mt-1 ${field}`}
                   value={shareViews}
                   onChange={(e) => setShareViews(e.target.value)}
                 >
@@ -982,16 +1081,64 @@ export function SecretDetailDrawer({
             <Button
               type="button"
               disabled={busy || sharePass.length < 8}
-              onClick={() => void shareExternal()}
+              onClick={() => void createEphemeralShare()}
             >
-              Créer lien + télécharger le paquet
+              {shareScope === "external"
+                ? "Create link + download package"
+                : "Create internal ephemeral link"}
             </Button>
             {lastShareLink && (
-              <div className="rounded-lg border border-[var(--ov-border)] bg-[var(--ov-soft)] p-2 text-xs break-all">
-                <p className="mb-1 font-medium text-emerald-600 dark:text-emerald-400">
-                  Lien copié (à envoyer avec le MDP de partage) :
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-xs break-all">
+                <p className="mb-1 font-medium text-emerald-700 dark:text-emerald-400">
+                  Link copied — send with the share password
                 </p>
                 {lastShareLink}
+              </div>
+            )}
+
+            {activeShares.length > 0 && (
+              <div className="space-y-2 border-t border-[var(--ov-border)] pt-3">
+                <p className="text-xs font-semibold uppercase text-[var(--ov-faint)]">
+                  Active shares
+                </p>
+                <ul className="space-y-2 text-xs">
+                  {activeShares.map((s) => (
+                    <li
+                      key={s.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--ov-border)] bg-[var(--ov-panel)] px-2 py-1.5"
+                    >
+                      <span>
+                        {s.scope}
+                        {s.expiresAt
+                          ? ` · until ${s.expiresAt.slice(0, 16).replace("T", " ")}`
+                          : " · no expiry"}
+                        {s.maxViews != null
+                          ? ` · ${s.viewCount}/${s.maxViews} views`
+                          : ` · ${s.viewCount} views`}
+                      </span>
+                      <button
+                        type="button"
+                        className="text-red-500 hover:underline"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await api.deleteShare(s.id);
+                              await loadShares();
+                            } catch (err) {
+                              onError(
+                                err instanceof Error
+                                  ? err.message
+                                  : "Revoke failed"
+                              );
+                            }
+                          })();
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>

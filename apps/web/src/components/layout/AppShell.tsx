@@ -11,6 +11,7 @@ import {
   IconMoon,
   IconPlus,
   IconSearch,
+  IconExternal,
   IconShield,
   IconSun,
   IconTag,
@@ -31,13 +32,15 @@ export type MainSection =
   | "vault"
   | "settings"
   | "orgs"
-  | "generators";
+  | "generators"
+  | "shares";
 
 export type SettingsTab =
   | "account"
   | "backup"
   | "security"
   | "privacy"
+  | "mail"
   | "workspace"
   | "about";
 
@@ -64,6 +67,7 @@ const SETTINGS_NAV: Array<{
   { id: "account", label: "Account", Icon: IconUser },
   { id: "security", label: "Security", Icon: IconShield },
   { id: "privacy", label: "Privacy", Icon: IconLock },
+  { id: "mail", label: "Mail", Icon: IconExternal },
   { id: "backup", label: "Backup", Icon: IconDownload },
   { id: "about", label: "About", Icon: IconInfo },
 ];
@@ -156,7 +160,9 @@ export function AppShell({
         ? "Home"
         : section === "orgs"
           ? "Organizations"
-          : section === "generators"
+          : section === "shares"
+        ? "Shares"
+        : section === "generators"
             ? "Generators"
             : section === "settings"
               ? "Settings"
@@ -205,6 +211,12 @@ export function AppShell({
               icon={<IconVault className="h-4 w-4" />}
               label="My vault"
               badge={counts.all}
+            />
+            <NavBtn
+              active={section === "shares"}
+              onClick={() => onSection("shares")}
+              icon={<IconExternal className="h-4 w-4" />}
+              label="Shares"
             />
             <NavBtn
               active={section === "generators"}

@@ -1,8 +1,11 @@
 import type { MasterKey } from "@ops-vault/core";
 import { Button, Card } from "@ops-vault/ui";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { OrgNav } from "./layout/AppShell";
-import { SecurityReport } from "./SecurityReport";
+import {
+  SecurityReport,
+  type SecurityReportHandle,
+} from "./SecurityReport";
 
 interface Props {
   vaultName: string;
@@ -34,6 +37,16 @@ export function HomeDashboard({
   onOpenSecretId,
 }: Props) {
   const reportRef = useRef<HTMLDivElement>(null);
+  const reportApi = useRef<SecurityReportHandle>(null);
+  const [showHealth, setShowHealth] = useState(false);
+
+  function openHealth() {
+    setShowHealth(true);
+    window.setTimeout(() => {
+      reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      reportApi.current?.focus();
+    }, 50);
+  }
 
   return (
     <div className="space-y-6">
@@ -93,6 +106,7 @@ export function HomeDashboard({
         </Card>
       </div>
 
+      {/* Single entry point for HIBP / health */}
       <div className="rounded-xl border border-[var(--ov-accent)]/35 bg-[var(--ov-accent-soft)] p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -100,30 +114,25 @@ export function HomeDashboard({
               Breach check & password health
             </h3>
             <p className="mt-0.5 text-xs text-[var(--ov-muted)]">
-              Weak passwords and HIBP exposures — run the report below.
+              HIBP k-anonymity + weak password scan for this vault.
             </p>
           </div>
-          <Button
-            type="button"
-            onClick={() =>
-              reportRef.current?.scrollIntoView({
-                behavior: "smooth",
-                block: "start",
-              })
-            }
-          >
-            Run health check
+          <Button type="button" onClick={openHealth}>
+            {showHealth ? "Refresh zone" : "Open check"}
           </Button>
         </div>
       </div>
 
-      <div ref={reportRef}>
-        <SecurityReport
-          masterKey={masterKey}
-          onError={onError}
-          onOpenSecret={onOpenSecretId}
-        />
-      </div>
+      {showHealth && (
+        <div ref={reportRef}>
+          <SecurityReport
+            ref={reportApi}
+            masterKey={masterKey}
+            onError={onError}
+            onOpenSecret={onOpenSecretId}
+          />
+        </div>
+      )}
 
       {orgs.length > 0 && (
         <div>
@@ -138,7 +147,7 @@ export function HomeDashboard({
                 >
                   <span className="font-medium">{o.name}</span>
                   <span className="text-xs text-[var(--ov-faint)]">
-                    Enter org vault →
+                    Enter →
                   </span>
                 </button>
               </li>

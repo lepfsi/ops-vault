@@ -15,6 +15,7 @@ import { HomeDashboard } from "./components/HomeDashboard";
 import { SecretDetailDrawer } from "./components/SecretDetailDrawer";
 import { SecretList } from "./components/SecretList";
 import { SettingsView } from "./components/SettingsView";
+import { SharesPage } from "./components/SharesPage";
 import { WorkspacePanel } from "./components/WorkspacePanel";
 import {
   AppShell,
@@ -39,6 +40,62 @@ function parseHashRoute():
   if (claim) return { kind: "claim", token: claim[1]! };
   const inv = h.match(/^\/?invite\/([a-f0-9]+)/i);
   if (inv) return { kind: "invite", token: inv[1]! };
+  return null;
+}
+
+/** One-shot meta load for Home counts/folders without mounting SecretList. */
+function HomeMetaLoader({
+  refreshToken,
+  onCounts,
+  onMeta,
+}: {
+  refreshToken: number;
+  onCounts: (c: Partial<Record<VaultFilter, number>>) => void;
+  onMeta: (m: {
+    folders: { id: string; name: string; count: number }[];
+    tags: string[];
+  }) => void;
+}) {
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [{ items: list }, { folders }, { tags }] = await Promise.all([
+          api.listSecrets({ workspaceId: null }),
+          api.listFolders(),
+          api.listTags(),
+        ]);
+        if (cancelled) return;
+        const counts: Partial<Record<VaultFilter, number>> = {
+          all: list.length,
+        };
+        for (const it of list) {
+          counts[it.type] = (counts[it.type] ?? 0) + 1;
+        }
+        const fcounts: Record<string, number> = {};
+        for (const f of folders) fcounts[f.id] = 0;
+        for (const it of list) {
+          if (it.folderId && fcounts[it.folderId] !== undefined) {
+            fcounts[it.folderId]!++;
+          }
+        }
+        onCounts(counts);
+        onMeta({
+          folders: folders.map((f) => ({
+            id: f.id,
+            name: f.name,
+            count: fcounts[f.id] ?? 0,
+          })),
+          tags,
+        });
+      } catch {
+        /* ignore — home still usable */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshToken, onCounts, onMeta]);
   return null;
 }
 
@@ -147,12 +204,14 @@ export default function App() {
     },
   });
 
-  // Load orgs for sidebar / home (scoped to this vault only)
+  // Load orgs for sidebar / home — never wipe list on transient API errors
   useEffect(() => {
     if (!unlocked) return;
+    let cancelled = false;
     void (async () => {
       try {
         const { workspaces } = await api.listWorkspaces();
+        if (cancelled) return;
         setOrgs(
           workspaces.map((w) => ({
             id: w.id,
@@ -162,9 +221,12 @@ export default function App() {
           }))
         );
       } catch {
-        setOrgs([]);
+        /* keep previous orgs */
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [unlocked, refreshToken]);
 
   const authPanel = (
@@ -515,6 +577,14 @@ export default function App() {
           />
         )}
 
+        {section === "shares" && (
+          <SharesPage
+            masterKey={session.key}
+            workspaceId={workspaceMode === "org" ? focusOrgId : null}
+            onError={session.setError}
+          />
+        )}
+
         {section === "generators" && <GeneratorsView />}
 
         {section === "orgs" && (
@@ -646,26 +716,28 @@ export default function App() {
               setRefreshToken((n) => n + 1);
             }}
             onError={session.setError}
+            onVaultDeleted={() => {
+              session.signOut();
+            }}
+            activeOrgId={
+              workspaceMode === "org" ? focusOrgId : null
+            }
+            activeOrgName={activeOrg?.name ?? null}
+            onOrgDeleted={() => {
+              exitOrg();
+              setRefreshToken((n) => n + 1);
+            }}
           />
         )}
       </AppShell>
 
-      {/* Hidden list on home so counts still refresh */}
-      {section === "home" && (
-        <div className="hidden">
-          <SecretList
-            refreshToken={refreshToken}
-            filter="all"
-            search=""
-            folderId={null}
-            tag={null}
-            onSelect={() => undefined}
-            onError={() => undefined}
-            onMoved={() => undefined}
-            onCounts={onCounts}
-            onMeta={onMeta}
-          />
-        </div>
+      {/* Lightweight meta refresh on home (no SecretList mount — avoids loops) */}
+      {section === "home" && unlocked && (
+        <HomeMetaLoader
+          refreshToken={refreshToken}
+          onCounts={onCounts}
+          onMeta={onMeta}
+        />
       )}
 
       <SecretDetailDrawer
@@ -673,6 +745,7 @@ export default function App() {
         secret={selected}
         masterKey={session.key}
         orgKey={orgKey}
+        workspaceId={workspaceMode === "org" ? focusOrgId : null}
         folders={folders}
         onClose={() => setSelected(null)}
         onDeleted={() => {

@@ -368,6 +368,19 @@ CREATE TABLE IF NOT EXISTS workspace_group_members (
     } catch (err) {
       console.warn("secret_shares migrate:", err);
     }
+
+    // vault_settings.smtp_json (UI-configurable SMTP for share emails)
+    try {
+      const vsCols = this.db
+        .prepare("PRAGMA table_info(vault_settings)")
+        .all() as unknown as Array<{ name: string }>;
+      const vsNames = new Set(vsCols.map((c) => c.name));
+      if (vsNames.size > 0 && !vsNames.has("smtp_json")) {
+        this.db.exec("ALTER TABLE vault_settings ADD COLUMN smtp_json TEXT");
+      }
+    } catch (err) {
+      console.warn("vault_settings migrate:", err);
+    }
   }
 
   close(): void {
@@ -512,10 +525,52 @@ CREATE TABLE IF NOT EXISTS workspace_group_members (
 
   deleteVault(vaultId: string): boolean {
     this.db.prepare("DELETE FROM secrets WHERE vault_id = ?").run(vaultId);
+    this.db.prepare("DELETE FROM folders WHERE vault_id = ?").run(vaultId);
+    this.db
+      .prepare("DELETE FROM workspace_org_keys WHERE vault_id = ?")
+      .run(vaultId);
+    this.db
+      .prepare(
+        `UPDATE workspace_members SET status = 'revoked', accepted_vault_id = NULL
+         WHERE accepted_vault_id = ?`
+      )
+      .run(vaultId);
     const result = this.db
       .prepare("DELETE FROM vaults WHERE id = ?")
       .run(vaultId);
     return Number(result.changes) > 0;
+  }
+
+  deleteWorkspace(workspaceId: string, ownerVaultId: string): boolean {
+    const ws = this.db
+      .prepare(`SELECT owner_vault_id FROM workspaces WHERE id = ?`)
+      .get(workspaceId) as unknown as { owner_vault_id: string | null } | undefined;
+    if (!ws) return false;
+    if (ws.owner_vault_id && ws.owner_vault_id !== ownerVaultId) {
+      throw new Error("Only the organization owner can delete it");
+    }
+    this.db
+      .prepare(`DELETE FROM secrets WHERE workspace_id = ?`)
+      .run(workspaceId);
+    this.db
+      .prepare(
+        `DELETE FROM workspace_group_members WHERE group_id IN
+         (SELECT id FROM workspace_groups WHERE workspace_id = ?)`
+      )
+      .run(workspaceId);
+    this.db
+      .prepare(`DELETE FROM workspace_groups WHERE workspace_id = ?`)
+      .run(workspaceId);
+    this.db
+      .prepare(`DELETE FROM workspace_org_keys WHERE workspace_id = ?`)
+      .run(workspaceId);
+    this.db
+      .prepare(`DELETE FROM workspace_members WHERE workspace_id = ?`)
+      .run(workspaceId);
+    const r = this.db
+      .prepare(`DELETE FROM workspaces WHERE id = ?`)
+      .run(workspaceId);
+    return Number(r.changes) > 0;
   }
 
   setRecovery(vaultId: string, recovery: RecoveryBundle | null): void {
@@ -1688,6 +1743,27 @@ CREATE TABLE IF NOT EXISTS workspace_group_members (
            updated_at = excluded.updated_at`
       )
       .run(vaultId, policyJson, now);
+  }
+
+  /** Full SMTP JSON as stored (includes password). */
+  getSmtpConfigRaw(vaultId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT smtp_json FROM vault_settings WHERE vault_id = ?`)
+      .get(vaultId) as unknown as { smtp_json: string | null } | undefined;
+    return row?.smtp_json ?? null;
+  }
+
+  setSmtpConfigRaw(vaultId: string, smtpJson: string | null): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO vault_settings (vault_id, smtp_json, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(vault_id) DO UPDATE SET
+           smtp_json = excluded.smtp_json,
+           updated_at = excluded.updated_at`
+      )
+      .run(vaultId, smtpJson, now);
   }
 }
 

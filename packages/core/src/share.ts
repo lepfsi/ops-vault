@@ -137,17 +137,18 @@ export function isExternalSharePackage(
 }
 
 export const SHARE_TTL_PRESETS = [
-  { id: "1h", label: "1 heure", ms: 3_600_000 },
-  { id: "24h", label: "24 heures", ms: 86_400_000 },
-  { id: "7d", label: "7 jours", ms: 7 * 86_400_000 },
-  { id: "30d", label: "30 jours", ms: 30 * 86_400_000 },
-  { id: "never", label: "Sans expiration", ms: null },
+  { id: "15m", label: "15 minutes", ms: 15 * 60_000 },
+  { id: "1h", label: "1 hour", ms: 3_600_000 },
+  { id: "24h", label: "24 hours", ms: 86_400_000 },
+  { id: "7d", label: "7 days", ms: 7 * 86_400_000 },
+  { id: "30d", label: "30 days", ms: 30 * 86_400_000 },
+  { id: "never", label: "No expiry", ms: null },
 ] as const;
 
 export const SHARE_VIEW_PRESETS = [
-  { id: "1", label: "1 vue", views: 1 },
-  { id: "2", label: "2 vues", views: 2 },
-  { id: "5", label: "5 vues", views: 5 },
-  { id: "10", label: "10 vues", views: 10 },
-  { id: "unlimited", label: "Illimité", views: null },
+  { id: "1", label: "1 view", views: 1 },
+  { id: "2", label: "2 views", views: 2 },
+  { id: "5", label: "5 views", views: 5 },
+  { id: "10", label: "10 views", views: 10 },
+  { id: "unlimited", label: "Unlimited", views: null },
 ] as const;

@@ -54,36 +54,47 @@ export function WorkspacePanel({
     try {
       const { workspaces: list } = await api.listWorkspaces();
       setWorkspaces(list);
-      if (focusId && list.some((w) => w.id === focusId)) {
-        setSelected(focusId);
-      } else if (selected && !list.some((w) => w.id === selected)) {
-        setSelected(null);
-        setMembers([]);
-        setGroups([]);
-      }
+      setSelected((prev) => {
+        if (focusId && list.some((w) => w.id === focusId)) return focusId;
+        if (prev && list.some((w) => w.id === prev)) return prev;
+        return prev;
+      });
     } catch (err) {
+      // Keep previous list on transient API blips (avoids org "disappearing")
       onError(err instanceof Error ? err.message : "Workspaces load failed");
     }
-  }, [onError, selected, focusId]);
+  }, [onError, focusId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
+    if (focusId) setSelected(focusId);
+  }, [focusId]);
+
+  useEffect(() => {
     if (!selected) return;
+    let cancelled = false;
     void (async () => {
       try {
         const [{ members: m }, { groups: g }] = await Promise.all([
           api.listWorkspaceMembers(selected),
           api.listGroups(selected),
         ]);
-        setMembers(m);
-        setGroups(g);
+        if (!cancelled) {
+          setMembers(m);
+          setGroups(g);
+        }
       } catch (err) {
-        onError(err instanceof Error ? err.message : "Members load failed");
+        if (!cancelled) {
+          onError(err instanceof Error ? err.message : "Members load failed");
+        }
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [selected, onError]);
 
   async function ensureOrgKeyUploaded(workspaceId: string, key: MasterKey) {
@@ -487,6 +498,45 @@ export function WorkspacePanel({
                 </Button>
               </div>
             )}
+          </div>
+
+          <div className="space-y-2 rounded-xl border border-red-500/40 bg-red-500/5 p-4">
+            <p className="text-sm font-semibold text-red-600 dark:text-red-400">
+              Danger zone
+            </p>
+            <p className="text-xs text-[var(--ov-muted)]">
+              Delete this organization (owner only). Shared secrets and groups
+              are removed.
+            </p>
+            <Button
+              type="button"
+              variant="danger"
+              disabled={busy}
+              onClick={() => {
+                const w = workspaces.find((x) => x.id === selected);
+                if (!w) return;
+                const typed = window.prompt(
+                  `Type the org name « ${w.name} » to delete permanently:`
+                );
+                if (typed !== w.name) return;
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    await api.deleteWorkspace(selected);
+                    setSelected(null);
+                    await load();
+                  } catch (err) {
+                    onError(
+                      err instanceof Error ? err.message : "Delete failed"
+                    );
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+            >
+              Delete organization
+            </Button>
           </div>
         </div>
       )}
